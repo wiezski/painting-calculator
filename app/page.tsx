@@ -56,11 +56,12 @@ export default function Page() {
     return calculateEstimate(inputs);
   }, [inputs, confirmed]);
 
-  // Costs derived from the estimate + selected store.
+  // Costs derived from the estimate + inputs (labor/markup) + selected
+  // store. Inputs are passed because labor cost and markup live there.
   const costs = useMemo(() => {
     if (!result) return null;
-    return computeCosts(result, store);
-  }, [result, store]);
+    return computeCosts(result, inputs, store);
+  }, [result, inputs, store]);
 
   // Per-store costs for the comparison view. Computed regardless of
   // the toggle so flipping into compare mode is instant.
@@ -68,9 +69,9 @@ export default function Page() {
     if (!result) return null;
     return STORES.map((s) => ({
       store: s,
-      costs: computeCosts(result, s.id),
+      costs: computeCosts(result, inputs, s.id),
     }));
-  }, [result]);
+  }, [result, inputs]);
 
   const setField = <K extends keyof ProjectInputs>(
     key: K,
@@ -298,6 +299,38 @@ function InputCard({
             setField("windows", v === null ? null : Math.max(0, Math.round(v)))
           }
           placeholder="required"
+          min={0}
+          step={1}
+        />
+
+        <NumberField
+          label="Hourly Rate ($)"
+          // Default 35. Drives labor cost.
+          value={inputs.hourlyRate}
+          onChange={(v) => setField("hourlyRate", Math.max(0, v ?? 35))}
+          placeholder="35"
+          min={0}
+          step={1}
+        />
+
+        <NumberField
+          label="Number of Painters"
+          // Default 1. Multiplies labor cost.
+          value={inputs.numberOfPainters}
+          onChange={(v) =>
+            setField("numberOfPainters", Math.max(1, Math.round(v ?? 1)))
+          }
+          placeholder="1"
+          min={1}
+          step={1}
+        />
+
+        <NumberField
+          label="Markup %"
+          // Default 30. Applied to materials + labor subtotal.
+          value={inputs.markup}
+          onChange={(v) => setField("markup", Math.max(0, v ?? 30))}
+          placeholder="30"
           min={0}
           step={1}
         />
@@ -574,6 +607,55 @@ function ResultArea({
               </CostSubsection>
             </div>
           )}
+        </Card>
+      )}
+
+      {costs && !compareStores && (
+        <Card title="Job Pricing">
+          <div className="space-y-5">
+            <CostSubsection title="Materials">
+              <Grid>
+                <Stat
+                  label="Materials Cost"
+                  value={fmtMoney(costs.jobPricing.materials)}
+                />
+              </Grid>
+            </CostSubsection>
+
+            <CostSubsection title="Labor">
+              <Grid>
+                <Stat
+                  label="Hours"
+                  value={costs.labor.hours.toFixed(1)}
+                />
+                <Stat
+                  label="Cost / Painter"
+                  value={fmtMoney(costs.labor.costPerPainter)}
+                />
+                <Stat
+                  label="Total Labor"
+                  value={fmtMoney(costs.labor.totalCost)}
+                />
+              </Grid>
+            </CostSubsection>
+
+            <CostSubsection title="Totals">
+              <Grid>
+                <Stat
+                  label="Subtotal"
+                  value={fmtMoney(costs.jobPricing.subtotal)}
+                />
+                <Stat
+                  label="Markup Amount"
+                  value={fmtMoney(costs.jobPricing.markupAmount)}
+                />
+                <Stat
+                  label="Final Price"
+                  value={fmtMoney(costs.jobPricing.finalPrice)}
+                />
+              </Grid>
+            </CostSubsection>
+          </div>
         </Card>
       )}
     </section>

@@ -61,6 +61,9 @@ export const DEFAULT_INPUTS: ProjectInputs = {
   prime: true,
   doors: null,
   windows: null,
+  hourlyRate: 35,
+  numberOfPainters: 1,
+  markup: 30,
 };
 
 export function isValidInputs(inputs: ProjectInputs): boolean {

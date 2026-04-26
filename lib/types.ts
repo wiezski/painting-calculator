@@ -4,6 +4,7 @@
 // validate "user has explicitly entered a value" vs "we silently filled
 // in a placeholder". sqFt, wallHeight, doors, and windows are all
 // required — only the calc-tuning fields (wallMultiplier, coats, prime)
+// and the labor/markup fields (hourlyRate, numberOfPainters, markup)
 // keep defaults.
 export type ProjectInputs = {
   sqFt: number | null;
@@ -13,6 +14,9 @@ export type ProjectInputs = {
   prime: boolean;
   doors: number | null;
   windows: number | null;
+  hourlyRate: number;
+  numberOfPainters: number;
+  markup: number; // percent, e.g. 30 = +30 %
 };
 
 // What the AI extracts from uploaded plans. These are *suggestions* —

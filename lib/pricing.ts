@@ -2,7 +2,7 @@
 // is wired through to state but doesn't affect numbers yet (no API
 // calls). Drop in a per-store table here when ready.
 
-import type { Estimate, MaterialItem } from "./types";
+import type { Estimate, MaterialItem, ProjectInputs } from "./types";
 
 export type Store = "sherwin-williams" | "home-depot" | "lowes";
 
@@ -45,6 +45,9 @@ export interface MaterialCost {
   cost: number;
 }
 
+// Labor rate of work — sq ft of wall painted per painter-hour.
+const LABOR_SQFT_PER_HOUR = 150;
+
 export interface CostBreakdown {
   paintCosts: {
     walls: number;
@@ -53,18 +56,33 @@ export interface CostBreakdown {
     primer: number;
   };
   materialCosts: MaterialCost[];
+  labor: {
+    hours: number;          // wallArea / 150
+    costPerPainter: number; // hours × hourlyRate
+    totalCost: number;      // costPerPainter × numberOfPainters
+  };
   totals: {
     paint: number;
     materials: number;
-    grand: number;
+    labor: number;
+    grand: number;          // paint + materials (used by store comparison)
+  };
+  jobPricing: {
+    materials: number;      // = totals.materials
+    labor: number;          // = totals.labor
+    subtotal: number;       // materials + labor
+    markupAmount: number;   // subtotal × (markup / 100)
+    finalPrice: number;     // subtotal + markupAmount
   };
 }
 
-// Pricing depends on the estimate (gallons + materials list) and the
-// chosen store. Store is currently unused but accepted so the
-// signature is stable when real per-store pricing lands.
+// Pricing depends on the estimate (gallons + materials list), the
+// inputs (hourlyRate / numberOfPainters / markup drive labor and final
+// price), and the chosen store. Store is currently unused but accepted
+// so the signature is stable when real per-store pricing lands.
 export function computeCosts(
   estimate: Estimate,
+  inputs: ProjectInputs,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   store: Store,
 ): CostBreakdown {
@@ -95,13 +113,36 @@ export function computeCosts(
   const materialTotal = materialCosts.reduce((sum, m) => sum + m.cost, 0);
   const grand = paintTotal + materialTotal;
 
+  // Labor: wallArea / 150 sq ft per painter-hour.
+  const laborHours = estimate.wallArea / LABOR_SQFT_PER_HOUR;
+  const laborCostPerPainter = laborHours * inputs.hourlyRate;
+  const totalLaborCost = laborCostPerPainter * inputs.numberOfPainters;
+
+  // Job pricing: materials + labor → markup → final price.
+  const subtotal = materialTotal + totalLaborCost;
+  const markupAmount = subtotal * (inputs.markup / 100);
+  const finalPrice = subtotal + markupAmount;
+
   return {
     paintCosts,
     materialCosts,
+    labor: {
+      hours: laborHours,
+      costPerPainter: laborCostPerPainter,
+      totalCost: totalLaborCost,
+    },
     totals: {
       paint: paintTotal,
       materials: materialTotal,
+      labor: totalLaborCost,
       grand,
+    },
+    jobPricing: {
+      materials: materialTotal,
+      labor: totalLaborCost,
+      subtotal,
+      markupAmount,
+      finalPrice,
     },
   };
 }
