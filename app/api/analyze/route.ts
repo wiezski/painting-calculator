@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
 import { EXTRACTION_SYSTEM_PROMPT } from "@/lib/prompt";
-import { calculate, normalizeExtracted } from "@/lib/calculator";
 import type { Extracted } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -14,7 +13,6 @@ const SUPPORTED_IMAGE_TYPES = new Set([
   "image/gif",
   "image/webp",
 ]);
-
 const PDF_TYPE = "application/pdf";
 
 type ContentBlock =
@@ -28,11 +26,7 @@ type ContentBlock =
     }
   | {
       type: "document";
-      source: {
-        type: "base64";
-        media_type: "application/pdf";
-        data: string;
-      };
+      source: { type: "base64"; media_type: "application/pdf"; data: string };
     }
   | { type: "text"; text: string };
 
@@ -40,7 +34,7 @@ function getApiKey(): string {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
     throw new Error(
-      "ANTHROPIC_API_KEY is not set. Add it in Vercel project settings or .env.local for local dev.",
+      "ANTHROPIC_API_KEY is not set. Add it in Vercel Project Settings → Environment Variables.",
     );
   }
   return key;
@@ -51,10 +45,37 @@ function getModel(): string {
 }
 
 function stripJsonFence(s: string): string {
-  // Remove possible ```json ... ``` fences if the model adds them despite instructions.
   const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenced) return fenced[1].trim();
   return s.trim();
+}
+
+function safeNum(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : parseFloat(String(v));
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function safeInt(v: unknown): number | null {
+  const n = safeNum(v);
+  return n === null ? null : Math.round(n);
+}
+
+function normalizeExtracted(raw: Partial<Extracted>): Extracted {
+  return {
+    finished_sq_ft: safeNum(raw.finished_sq_ft),
+    ceiling_height_ft: safeNum(raw.ceiling_height_ft),
+    door_count: safeInt(raw.door_count),
+    window_count: safeInt(raw.window_count),
+    confidence:
+      raw.confidence === "high" ||
+      raw.confidence === "medium" ||
+      raw.confidence === "low"
+        ? raw.confidence
+        : "low",
+    notes: typeof raw.notes === "string" ? raw.notes : "",
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -69,7 +90,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Convert each file to a Claude content block.
     const blocks: ContentBlock[] = [];
     for (const f of files) {
       if (!(f instanceof File)) continue;
@@ -80,11 +100,7 @@ export async function POST(req: NextRequest) {
       if (type === PDF_TYPE) {
         blocks.push({
           type: "document",
-          source: {
-            type: "base64",
-            media_type: "application/pdf",
-            data,
-          },
+          source: { type: "base64", media_type: "application/pdf", data },
         });
       } else if (SUPPORTED_IMAGE_TYPES.has(type)) {
         blocks.push({
@@ -130,16 +146,12 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: "user",
-          // The block shapes above match the SDK's content-block param union;
-          // we cast through unknown because each block variant is typed
-          // separately by the SDK.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           content: blocks as unknown as any,
         },
       ],
     });
 
-    // Concatenate any text blocks the model returned.
     const text = response.content
       .filter((b): b is Anthropic.Messages.TextBlock => b.type === "text")
       .map((b) => b.text)
@@ -149,7 +161,7 @@ export async function POST(req: NextRequest) {
     let parsed: Partial<Extracted>;
     try {
       parsed = JSON.parse(stripJsonFence(text));
-    } catch (e) {
+    } catch {
       return NextResponse.json(
         {
           error:
@@ -160,13 +172,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const extracted = normalizeExtracted(parsed);
-    const result = calculate(extracted);
-
-    return NextResponse.json(result);
+    // Return ONLY the AI's suggestions. No calculations on the server.
+    // The client runs the math after the user confirms / edits inputs.
+    return NextResponse.json({ extracted: normalizeExtracted(parsed) });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error.";
-    const status = message.includes("ANTHROPIC_API_KEY") ? 500 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

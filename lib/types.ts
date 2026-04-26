@@ -1,12 +1,22 @@
-// Types for the painting takeoff estimator output.
-// Matches the JSON spec exactly.
+// Types shared across server and client.
 
+// What the user controls. Required fields default to null so we can
+// validate "user has explicitly entered a value" vs "we silently filled
+// in a placeholder".
+export type ProjectInputs = {
+  sqFt: number | null;
+  wallHeight: number | null;
+  wallMultiplier: number;
+  coats: number;
+  prime: boolean;
+};
+
+// What the AI extracts from uploaded plans. These are *suggestions* —
+// the user must accept them by leaving the inputs as-is, or override.
 export type Confidence = "high" | "medium" | "low";
 
 export interface Extracted {
   finished_sq_ft: number | null;
-  garage_sq_ft: number | null;
-  patio_sq_ft: number | null;
   ceiling_height_ft: number | null;
   door_count: number | null;
   window_count: number | null;
@@ -14,37 +24,17 @@ export interface Extracted {
   notes: string;
 }
 
-export interface Assumptions {
-  wall_multiplier: number;
-  coats: number;
-  waste_factor: string;
-}
-
-export interface Areas {
-  wall_area_sq_ft: number;
-  ceiling_area_sq_ft: number;
-}
-
-export interface Paint {
-  wall_paint_gallons: number;
-  ceiling_paint_gallons: number;
-  trim_paint_gallons: number;
-  door_paint_gallons: number;
-  primer_gallons: number;
-}
-
-export interface Materials {
-  tape_rolls: number;
-  plastic_rolls: number;
-  paper_rolls: number;
-  caulk_tubes: number;
-  sanding_pads: number;
-}
-
-export interface TakeoffResult {
-  extracted: Extracted;
-  assumptions: Assumptions;
-  areas: Areas;
-  paint: Paint;
-  materials: Materials;
+// Calculator output.
+export interface Estimate {
+  wallArea: number;
+  ceilingArea: number;
+  wallGallons: number;
+  ceilingGallons: number;
+  primerGallons: number;
+  materials: {
+    tape: number;
+    plastic: number;
+    paper: number;
+    sandingPads: number;
+  };
 }

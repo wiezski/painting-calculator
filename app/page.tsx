@@ -1,260 +1,521 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { TakeoffResult } from "@/lib/types";
+import {
+  DEFAULT_INPUTS,
+  calculateEstimate,
+  isValidInputs,
+} from "@/lib/calculator";
+import type { Extracted, ProjectInputs } from "@/lib/types";
 
-type Status = "idle" | "uploading" | "ready" | "error";
+type AiState =
+  | { status: "idle" }
+  | { status: "uploading" }
+  | { status: "ready"; extracted: Extracted }
+  | { status: "error"; message: string };
 
 export default function Page() {
+  // Source of truth for the calculator. Required fields start as null —
+  // we never silently default sqFt or wallHeight, even after AI extraction.
+  const [inputs, setInputs] = useState<ProjectInputs>(DEFAULT_INPUTS);
+
+  // Optional AI side panel.
   const [files, setFiles] = useState<File[]>([]);
-  const [status, setStatus] = useState<Status>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<TakeoffResult | null>(null);
-  const [showJson, setShowJson] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
+  const [ai, setAi] = useState<AiState>({ status: "idle" });
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const onPick = useCallback((picked: FileList | File[] | null) => {
+  const result = isValidInputs(inputs) ? calculateEstimate(inputs) : null;
+
+  const setField = <K extends keyof ProjectInputs>(
+    key: K,
+    value: ProjectInputs[K],
+  ) => setInputs((prev) => ({ ...prev, [key]: value }));
+
+  const onFiles = useCallback((picked: FileList | File[] | null) => {
     if (!picked) return;
-    const arr = Array.from(picked);
-    setFiles(arr);
-    setError(null);
-    setResult(null);
-    setStatus("idle");
+    setFiles(Array.from(picked));
+    setAi({ status: "idle" });
   }, []);
 
-  const submit = async () => {
+  const analyze = async () => {
     if (!files.length) return;
-    setStatus("uploading");
-    setError(null);
-    setResult(null);
+    setAi({ status: "uploading" });
     try {
       const fd = new FormData();
       for (const f of files) fd.append("files", f);
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
-        setError(json.error || `Server error (${res.status})`);
-        setStatus("error");
+        setAi({
+          status: "error",
+          message: json.error || `Server error (${res.status})`,
+        });
         return;
       }
-      setResult(json as TakeoffResult);
-      setStatus("ready");
+      const extracted = json.extracted as Extracted;
+      setAi({ status: "ready", extracted });
+      // Suggest values into the form. User can override at any time.
+      // We only fill fields the AI returned — never overwrite a non-null value
+      // the user already typed.
+      setInputs((prev) => ({
+        ...prev,
+        sqFt: prev.sqFt ?? extracted.finished_sq_ft,
+        wallHeight: prev.wallHeight ?? extracted.ceiling_height_ft,
+      }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Network error");
-      setStatus("error");
+      setAi({
+        status: "error",
+        message: e instanceof Error ? e.message : "Network error",
+      });
     }
   };
 
-  const reset = () => {
+  const clearAi = () => {
     setFiles([]);
-    setResult(null);
-    setError(null);
-    setStatus("idle");
+    setAi({ status: "idle" });
     if (inputRef.current) inputRef.current.value = "";
   };
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
-      <header className="mb-8">
+      <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight">
           Painting Calculator
         </h1>
         <p className="mt-2 text-sm text-zinc-400">
-          Upload architectural plans (PDF or images). The estimator extracts
-          square footage, ceiling height, and door / window counts, then
-          computes paint and materials using residential takeoff defaults.
+          Enter the project values below to compute paint and materials. You
+          can also upload plans and let the AI suggest values to start —
+          you&apos;re always in control of the final numbers.
         </p>
       </header>
 
-      <section
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
+      <InputCard
+        inputs={inputs}
+        setField={setField}
+      />
+
+      <ResultArea result={result} inputs={inputs} />
+
+      <AiSuggestPanel
+        files={files}
+        ai={ai}
+        inputRef={inputRef}
+        onFiles={onFiles}
+        analyze={analyze}
+        clear={clearAi}
+        applySuggestion={(field, value) => {
+          if (field === "sqFt") setField("sqFt", value);
+          if (field === "wallHeight") setField("wallHeight", value);
         }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          onPick(e.dataTransfer.files);
+      />
+
+      <footer className="mt-12 text-xs text-zinc-600">
+        Walls = sq ft × multiplier (default 2.6). Two coats. 10% waste. Always
+        sanity-check before ordering.
+      </footer>
+    </main>
+  );
+}
+
+/* ---------- Input section ---------- */
+
+function InputCard({
+  inputs,
+  setField,
+}: {
+  inputs: ProjectInputs;
+  setField: <K extends keyof ProjectInputs>(
+    key: K,
+    value: ProjectInputs[K],
+  ) => void;
+}) {
+  return (
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-400">
+        Project inputs
+      </h2>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <NumberField
+          label="Finished Sq Ft"
+          required
+          value={inputs.sqFt}
+          onChange={(v) => setField("sqFt", v)}
+          placeholder="e.g. 2500"
+          min={0}
+          step={1}
+        />
+
+        <div>
+          <NumberField
+            label="Wall Height (ft)"
+            required
+            value={inputs.wallHeight}
+            onChange={(v) => setField("wallHeight", v)}
+            placeholder="required"
+            min={0}
+            step={0.5}
+          />
+          <div className="mt-2 flex gap-2">
+            {[8, 9, 10].map((h) => {
+              const active = inputs.wallHeight === h;
+              return (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => setField("wallHeight", h)}
+                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+                    active
+                      ? "border-amber-500 bg-amber-500/15 text-amber-300"
+                      : "border-zinc-700 text-zinc-300 hover:border-zinc-500"
+                  }`}
+                >
+                  {h}&apos;
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <NumberField
+          label="Wall Multiplier"
+          value={inputs.wallMultiplier}
+          onChange={(v) => setField("wallMultiplier", v ?? 2.6)}
+          placeholder="2.6"
+          min={0}
+          step={0.1}
+        />
+
+        <NumberField
+          label="Coats"
+          value={inputs.coats}
+          onChange={(v) => setField("coats", Math.max(1, Math.round(v ?? 2)))}
+          placeholder="2"
+          min={1}
+          step={1}
+        />
+
+        <label className="col-span-1 flex select-none items-center gap-2 sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={inputs.prime}
+            onChange={(e) => setField("prime", e.target.checked)}
+            className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 accent-amber-500"
+          />
+          <span className="text-sm text-zinc-200">Prime (one coat)</span>
+        </label>
+      </div>
+    </section>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  required,
+  min,
+  step,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  placeholder?: string;
+  required?: boolean;
+  min?: number;
+  step?: number;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+        {label}
+        {required && <span className="ml-1 text-amber-500">*</span>}
+      </span>
+      <input
+        type="number"
+        inputMode="decimal"
+        value={value === null || Number.isNaN(value) ? "" : value}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") onChange(null);
+          else {
+            const n = parseFloat(raw);
+            onChange(Number.isFinite(n) ? n : null);
+          }
         }}
-        className={`rounded-2xl border-2 border-dashed p-8 text-center transition ${
-          dragOver
-            ? "border-amber-500 bg-amber-500/5"
-            : "border-zinc-800 bg-zinc-900/40"
-        }`}
-      >
+        placeholder={placeholder}
+        min={min}
+        step={step}
+        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+      />
+    </label>
+  );
+}
+
+/* ---------- Result section ---------- */
+
+function ResultArea({
+  result,
+  inputs,
+}: {
+  result: ReturnType<typeof calculateEstimate>;
+  inputs: ProjectInputs;
+}) {
+  if (!result) {
+    return (
+      <section className="mt-6 rounded-xl border border-dashed border-zinc-800 bg-zinc-900/20 p-6 text-center text-sm text-zinc-400">
+        Enter square footage and wall height to calculate estimate.
+      </section>
+    );
+  }
+
+  return (
+    <section className="mt-6 space-y-4">
+      <Card title="Project Summary">
+        <Grid>
+          <Stat label="Sq Ft" value={fmt(inputs.sqFt)} />
+          <Stat
+            label="Wall Height"
+            value={
+              inputs.wallHeight !== null ? `${inputs.wallHeight} ft` : "—"
+            }
+          />
+          <Stat label="Multiplier" value={inputs.wallMultiplier} />
+        </Grid>
+      </Card>
+
+      <Card title="Areas">
+        <Grid>
+          <Stat label="Wall Area" value={`${fmt(result.wallArea)} sq ft`} />
+          <Stat
+            label="Ceiling Area"
+            value={`${fmt(result.ceilingArea)} sq ft`}
+          />
+        </Grid>
+      </Card>
+
+      <Card title="Paint (gallons)">
+        <Grid>
+          <Stat label="Walls" value={result.wallGallons} />
+          <Stat label="Ceilings" value={result.ceilingGallons} />
+          <Stat
+            label="Primer"
+            value={inputs.prime ? result.primerGallons : "off"}
+          />
+        </Grid>
+      </Card>
+
+      <Card title="Materials">
+        <Grid>
+          <Stat label="Tape" value={result.materials.tape} />
+          <Stat label="Plastic" value={result.materials.plastic} />
+          <Stat label="Paper" value={result.materials.paper} />
+          <Stat label="Sanding pads" value={result.materials.sandingPads} />
+        </Grid>
+      </Card>
+    </section>
+  );
+}
+
+/* ---------- AI suggest panel ---------- */
+
+function AiSuggestPanel({
+  files,
+  ai,
+  inputRef,
+  onFiles,
+  analyze,
+  clear,
+  applySuggestion,
+}: {
+  files: File[];
+  ai: AiState;
+  inputRef: React.RefObject<HTMLInputElement>;
+  onFiles: (f: FileList | File[] | null) => void;
+  analyze: () => void;
+  clear: () => void;
+  applySuggestion: (
+    field: "sqFt" | "wallHeight",
+    value: number | null,
+  ) => void;
+}) {
+  return (
+    <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
+        Optional · Let AI suggest values from plans
+      </h2>
+      <p className="mt-1 text-xs text-zinc-500">
+        Upload PDFs or images. Claude reads schedules and notes and suggests
+        sq ft and wall height. You can accept, edit, or ignore the
+        suggestions.
+      </p>
+
+      <div className="mt-4">
         <input
           ref={inputRef}
           type="file"
           multiple
           accept="application/pdf,image/png,image/jpeg,image/gif,image/webp"
-          onChange={(e) => onPick(e.target.files)}
+          onChange={(e) => onFiles(e.target.files)}
           className="hidden"
         />
-        <button
-          onClick={() => inputRef.current?.click()}
-          className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400"
-        >
-          Choose files
-        </button>
-        <p className="mt-3 text-xs text-zinc-500">
-          or drop PDFs / images here
-        </p>
-
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-100 hover:bg-zinc-800"
+          >
+            Choose files
+          </button>
+          <button
+            type="button"
+            onClick={analyze}
+            disabled={!files.length || ai.status === "uploading"}
+            className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-medium text-black hover:bg-amber-400 disabled:opacity-40"
+          >
+            {ai.status === "uploading" ? "Analyzing…" : "Suggest values"}
+          </button>
+          {(files.length > 0 || ai.status === "ready" || ai.status === "error") && (
+            <button
+              type="button"
+              onClick={clear}
+              className="text-xs text-zinc-400 hover:text-zinc-200"
+            >
+              Clear
+            </button>
+          )}
+        </div>
         {files.length > 0 && (
-          <ul className="mt-6 space-y-1 text-left text-sm">
+          <ul className="mt-3 space-y-1 text-xs text-zinc-400">
             {files.map((f, i) => (
-              <li key={i} className="flex justify-between text-zinc-300">
+              <li key={i} className="flex justify-between">
                 <span className="truncate">{f.name}</span>
-                <span className="ml-4 shrink-0 text-zinc-500">
+                <span className="ml-4 shrink-0 text-zinc-600">
                   {(f.size / 1024 / 1024).toFixed(2)} MB
                 </span>
               </li>
             ))}
           </ul>
         )}
+      </div>
 
-        <div className="mt-6 flex justify-center gap-3">
-          <button
-            onClick={submit}
-            disabled={!files.length || status === "uploading"}
-            className="rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-100 hover:bg-zinc-800 disabled:opacity-40"
-          >
-            {status === "uploading" ? "Analyzing…" : "Run takeoff"}
-          </button>
-          {(files.length > 0 || result) && (
-            <button
-              onClick={reset}
-              className="rounded-md border border-zinc-800 px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200"
-            >
-              Clear
-            </button>
-          )}
-        </div>
-      </section>
-
-      {error && (
-        <div className="mt-6 rounded-lg border border-red-900/60 bg-red-950/40 p-4 text-sm text-red-300">
-          {error}
+      {ai.status === "error" && (
+        <div className="mt-4 rounded-md border border-red-900/60 bg-red-950/40 p-3 text-xs text-red-300">
+          {ai.message}
         </div>
       )}
 
-      {result && <Results result={result} showJson={showJson} setShowJson={setShowJson} />}
-
-      <footer className="mt-16 text-xs text-zinc-600">
-        V1 takeoff: walls × {result?.assumptions.wall_multiplier ?? 2.6}, two
-        coats, 10% waste. No window/door subtraction. Always sanity-check
-        before ordering.
-      </footer>
-    </main>
-  );
-}
-
-function Results({
-  result,
-  showJson,
-  setShowJson,
-}: {
-  result: TakeoffResult;
-  showJson: boolean;
-  setShowJson: (v: boolean) => void;
-}) {
-  const { extracted, assumptions, areas, paint, materials } = result;
-  return (
-    <section className="mt-8 space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Estimate</h2>
-        <button
-          onClick={() => setShowJson(!showJson)}
-          className="text-xs text-zinc-400 underline-offset-4 hover:text-zinc-200 hover:underline"
-        >
-          {showJson ? "Hide JSON" : "Show JSON"}
-        </button>
-      </div>
-
-      <Card title="Extracted from plans">
-        <Grid>
-          <Stat label="Finished sq ft" value={fmt(extracted.finished_sq_ft)} />
-          <Stat label="Garage sq ft" value={fmt(extracted.garage_sq_ft)} />
-          <Stat label="Patio sq ft" value={fmt(extracted.patio_sq_ft)} />
-          <Stat
-            label="Ceiling height"
-            value={
-              extracted.ceiling_height_ft != null
-                ? `${extracted.ceiling_height_ft} ft`
-                : "—"
-            }
-          />
-          <Stat label="Doors" value={fmt(extracted.door_count)} />
-          <Stat label="Windows" value={fmt(extracted.window_count)} />
-        </Grid>
-        <p className="mt-4 text-xs text-zinc-500">
-          Confidence:{" "}
-          <span
-            className={
-              extracted.confidence === "high"
-                ? "text-emerald-400"
-                : extracted.confidence === "medium"
-                ? "text-amber-400"
-                : "text-red-400"
-            }
-          >
-            {extracted.confidence}
-          </span>
-        </p>
-        {extracted.notes && (
-          <p className="mt-2 text-xs text-zinc-400">{extracted.notes}</p>
-        )}
-      </Card>
-
-      <Card title="Areas">
-        <Grid>
-          <Stat
-            label="Wall area"
-            value={`${fmt(areas.wall_area_sq_ft)} sq ft`}
-          />
-          <Stat
-            label="Ceiling area"
-            value={`${fmt(areas.ceiling_area_sq_ft)} sq ft`}
-          />
-        </Grid>
-        <p className="mt-3 text-xs text-zinc-500">
-          Wall multiplier {assumptions.wall_multiplier}, {assumptions.coats}{" "}
-          coats, {assumptions.waste_factor} waste.
-        </p>
-      </Card>
-
-      <Card title="Paint (gallons)">
-        <Grid>
-          <Stat label="Walls" value={paint.wall_paint_gallons} />
-          <Stat label="Ceilings" value={paint.ceiling_paint_gallons} />
-          <Stat label="Trim" value={paint.trim_paint_gallons} />
-          <Stat label="Doors" value={paint.door_paint_gallons} />
-          <Stat label="Primer" value={paint.primer_gallons} />
-        </Grid>
-      </Card>
-
-      <Card title="Materials">
-        <Grid>
-          <Stat label="Tape rolls" value={materials.tape_rolls} />
-          <Stat label="Plastic rolls" value={materials.plastic_rolls} />
-          <Stat label="Paper rolls" value={materials.paper_rolls} />
-          <Stat label="Caulk tubes" value={materials.caulk_tubes} />
-          <Stat label="Sanding pads" value={materials.sanding_pads} />
-        </Grid>
-      </Card>
-
-      {showJson && (
-        <pre className="overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-950 p-4 text-xs text-zinc-300">
-{JSON.stringify(result, null, 2)}
-        </pre>
+      {ai.status === "ready" && (
+        <Suggestions
+          extracted={ai.extracted}
+          applySuggestion={applySuggestion}
+        />
       )}
     </section>
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Suggestions({
+  extracted,
+  applySuggestion,
+}: {
+  extracted: Extracted;
+  applySuggestion: (
+    field: "sqFt" | "wallHeight",
+    value: number | null,
+  ) => void;
+}) {
+  const items: Array<{
+    label: string;
+    value: number | null;
+    field?: "sqFt" | "wallHeight";
+    note?: string;
+  }> = [
+    {
+      label: "Finished sq ft",
+      value: extracted.finished_sq_ft,
+      field: "sqFt",
+    },
+    {
+      label: "Wall / ceiling height (ft)",
+      value: extracted.ceiling_height_ft,
+      field: "wallHeight",
+    },
+    {
+      label: "Doors",
+      value: extracted.door_count,
+      note: "informational",
+    },
+    {
+      label: "Windows",
+      value: extracted.window_count,
+      note: "informational",
+    },
+  ];
+  return (
+    <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <span className="uppercase tracking-wide text-zinc-500">
+          AI suggestions
+        </span>
+        <span
+          className={
+            extracted.confidence === "high"
+              ? "text-emerald-400"
+              : extracted.confidence === "medium"
+                ? "text-amber-400"
+                : "text-red-400"
+          }
+        >
+          confidence: {extracted.confidence}
+        </span>
+      </div>
+      <ul className="divide-y divide-zinc-800 text-sm">
+        {items.map((it) => (
+          <li
+            key={it.label}
+            className="flex items-center justify-between py-2"
+          >
+            <span className="text-zinc-300">{it.label}</span>
+            <div className="flex items-center gap-3">
+              <span className="text-zinc-100">
+                {it.value === null ? "—" : it.value.toLocaleString()}
+              </span>
+              {it.field && it.value !== null && (
+                <button
+                  type="button"
+                  onClick={() => applySuggestion(it.field!, it.value)}
+                  className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:border-amber-500 hover:text-amber-300"
+                >
+                  Apply
+                </button>
+              )}
+              {it.note && (
+                <span className="text-[10px] uppercase tracking-wide text-zinc-600">
+                  {it.note}
+                </span>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {extracted.notes && (
+        <p className="mt-3 text-xs text-zinc-400">{extracted.notes}</p>
+      )}
+    </div>
+  );
+}
+
+/* ---------- shared bits ---------- */
+
+function Card({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
       <h3 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-400">
@@ -271,7 +532,13 @@ function Grid({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string | number }) {
+function Stat({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
   return (
     <div className="rounded-md bg-zinc-950/60 p-3">
       <div className="text-[10px] uppercase tracking-wide text-zinc-500">
@@ -286,5 +553,5 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 
 function fmt(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  return n.toLocaleString();
+  return Math.round(n).toLocaleString();
 }
