@@ -25,7 +25,13 @@ export function calculateEstimate(inputs: ProjectInputs): Estimate | null {
   if (!inputs.sqFt || !inputs.wallHeight) return null;
 
   const waste = 1.1;
-  const wallArea = inputs.sqFt * inputs.wallMultiplier;
+  // Wall area scales with both the multiplier (which encodes typical
+  // wall-perimeter / floor-area ratio) and the wall height vs. a 9 ft
+  // baseline. So a 2,500 sq ft house with 9 ft walls = 2,500 × 2.6 × 1
+  // = 6,500 sq ft of wall; with 10 ft walls it's 7,222 sq ft.
+  const baseHeight = 9;
+  const wallArea =
+    inputs.sqFt * inputs.wallMultiplier * (inputs.wallHeight / baseHeight);
   const ceilingArea = inputs.sqFt;
 
   const wallCoverage = 350;
