@@ -8,26 +8,41 @@ import {
 } from "@/lib/calculator";
 import type { Extracted, ProjectInputs } from "@/lib/types";
 
+// Upload / analyze lifecycle. The extracted data is held separately
+// in `aiSuggestions` so that the read-only suggestion state cannot be
+// confused with the user-controlled input state.
 type AiState =
   | { status: "idle" }
   | { status: "uploading" }
-  | { status: "ready"; extracted: Extracted }
+  | { status: "ready" }
   | { status: "error"; message: string };
 
 export default function Page() {
-  // Source of truth for the calculator. Required fields start as null —
-  // we never silently default sqFt or wallHeight, even after AI extraction.
+  // ── State 1 of 2 ──────────────────────────────────────────────
+  // `inputs` is the ONLY state used for calculations and for the
+  // values shown in the input fields. User typing is the source of
+  // truth. Required fields start as null.
   const [inputs, setInputs] = useState<ProjectInputs>(DEFAULT_INPUTS);
 
-  // Optional AI side panel.
+  // ── State 2 of 2 ──────────────────────────────────────────────
+  // `aiSuggestions` is read-only data returned by the analyze API.
+  // It is NEVER auto-copied into `inputs`. The only path from
+  // suggestions to inputs is the explicit Apply button below.
+  const [aiSuggestions, setAiSuggestions] = useState<Extracted | null>(null);
+
+  // Upload / analyze status (separate from data).
   const [files, setFiles] = useState<File[]>([]);
   const [ai, setAi] = useState<AiState>({ status: "idle" });
+
   // Tracks the most recently applied AI suggestion so we can briefly
   // highlight the input field and show "Applied".
   const [recentlyApplied, setRecentlyApplied] = useState<
     keyof ProjectInputs | null
   >(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // NOTE: there is intentionally NO useEffect that copies aiSuggestions
+  // into inputs. Adding one would re-introduce the override bug.
 
   const result = isValidInputs(inputs) ? calculateEstimate(inputs) : null;
 
@@ -36,15 +51,24 @@ export default function Page() {
     value: ProjectInputs[K],
   ) => setInputs((prev) => ({ ...prev, [key]: value }));
 
-  // Single connection between AI suggestions and Project Inputs.
-  // Always uses setInputs against the latest state. Never runs except
-  // when the user clicks "Apply".
-  const applySuggestion = (
-    field: "sqFt" | "wallHeight",
-    value: number | null,
-  ) => {
-    if (value === null) return;
-    setInputs((prev) => ({ ...prev, [field]: value }));
+  // The single, explicit connection from AI suggestions → inputs.
+  // Reads aiSuggestions inline so it always uses the freshest value
+  // — never a stale closure captured at render time.
+  const applySuggestion = (field: "sqFt" | "wallHeight") => {
+    if (!aiSuggestions) return;
+    if (field === "sqFt") {
+      if (aiSuggestions.finished_sq_ft === null) return;
+      setInputs((prev) => ({
+        ...prev,
+        sqFt: aiSuggestions.finished_sq_ft,
+      }));
+    } else if (field === "wallHeight") {
+      if (aiSuggestions.ceiling_height_ft === null) return;
+      setInputs((prev) => ({
+        ...prev,
+        wallHeight: aiSuggestions.ceiling_height_ft,
+      }));
+    }
     setRecentlyApplied(field);
     window.setTimeout(() => {
       setRecentlyApplied((curr) => (curr === field ? null : curr));
@@ -73,9 +97,10 @@ export default function Page() {
         return;
       }
       const extracted = json.extracted as Extracted;
-      setAi({ status: "ready", extracted });
-      // No auto-fill. Project Inputs only update when the user clicks
-      // "Apply" on a specific suggestion.
+      setAiSuggestions(extracted);
+      setAi({ status: "ready" });
+      // Inputs are NOT touched here. Suggestions only flow into
+      // inputs through the explicit Apply button.
     } catch (e) {
       setAi({
         status: "error",
@@ -87,6 +112,7 @@ export default function Page() {
   const clearAi = () => {
     setFiles([]);
     setAi({ status: "idle" });
+    setAiSuggestions(null);
     if (inputRef.current) inputRef.current.value = "";
   };
 
@@ -114,6 +140,7 @@ export default function Page() {
       <AiSuggestPanel
         files={files}
         ai={ai}
+        aiSuggestions={aiSuggestions}
         inputRef={inputRef}
         onFiles={onFiles}
         analyze={analyze}
@@ -254,7 +281,9 @@ function NumberField({
       <input
         type="number"
         inputMode="decimal"
-        value={value === null || Number.isNaN(value) ? "" : value}
+        // Reads ONLY from the inputs state passed in via `value`.
+        // Never reads from aiSuggestions.
+        value={value ?? ""}
         onChange={(e) => {
           const raw = e.target.value;
           if (raw === "") onChange(null);
@@ -346,6 +375,7 @@ function ResultArea({
 function AiSuggestPanel({
   files,
   ai,
+  aiSuggestions,
   inputRef,
   onFiles,
   analyze,
@@ -355,14 +385,12 @@ function AiSuggestPanel({
 }: {
   files: File[];
   ai: AiState;
+  aiSuggestions: Extracted | null;
   inputRef: React.RefObject<HTMLInputElement>;
   onFiles: (f: FileList | File[] | null) => void;
   analyze: () => void;
   clear: () => void;
-  applySuggestion: (
-    field: "sqFt" | "wallHeight",
-    value: number | null,
-  ) => void;
+  applySuggestion: (field: "sqFt" | "wallHeight") => void;
   recentlyApplied: keyof ProjectInputs | null;
 }) {
   return (
@@ -431,9 +459,9 @@ function AiSuggestPanel({
         </div>
       )}
 
-      {ai.status === "ready" && (
+      {ai.status === "ready" && aiSuggestions && (
         <Suggestions
-          extracted={ai.extracted}
+          extracted={aiSuggestions}
           applySuggestion={applySuggestion}
           recentlyApplied={recentlyApplied}
         />
@@ -442,16 +470,17 @@ function AiSuggestPanel({
   );
 }
 
+// AI Suggestions display. Read-only: takes extracted data and renders
+// it. Apply buttons hand the field name back to the parent — the parent
+// is responsible for reading the current AI value and calling setInputs.
+// This component never imports or knows about the inputs state.
 function Suggestions({
   extracted,
   applySuggestion,
   recentlyApplied,
 }: {
   extracted: Extracted;
-  applySuggestion: (
-    field: "sqFt" | "wallHeight",
-    value: number | null,
-  ) => void;
+  applySuggestion: (field: "sqFt" | "wallHeight") => void;
   recentlyApplied: keyof ProjectInputs | null;
 }) {
   const items: Array<{
@@ -513,7 +542,9 @@ function Suggestions({
               {it.field && it.value !== null && (
                 <button
                   type="button"
-                  onClick={() => applySuggestion(it.field!, it.value)}
+                  // Pass only the field name. The parent reads the
+                  // current AI value inline, so no stale closure.
+                  onClick={() => applySuggestion(it.field!)}
                   className={`rounded border px-2 py-0.5 text-xs transition ${
                     recentlyApplied === it.field
                       ? "border-emerald-500 text-emerald-300"
