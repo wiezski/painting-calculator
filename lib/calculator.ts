@@ -64,6 +64,11 @@ export const DEFAULT_INPUTS: ProjectInputs = {
   hourlyRate: 35,
   numberOfPainters: 1,
   markup: 30,
+  // Production rates (industry-standard starting points).
+  wallRate: 150,
+  ceilingRate: 200,
+  trimRate: 80,
+  doorRate: 2,
 };
 
 export function isValidInputs(inputs: ProjectInputs): boolean {
@@ -106,18 +111,20 @@ export function calculateEstimate(inputs: ProjectInputs): Estimate | null {
     ? Math.ceil((wallArea / wallCoverage) * waste)
     : 0;
 
+  // Door area: each door ≈ 20 sq ft of paintable surface.
+  const doorArea = inputs.doors * 20;
   // Trim area = door perimeter (≈ 20 sq ft/door) + window perimeter
   // (≈ 15 sq ft/window) + a 0.5×sqFt baseboard allowance.
   const trimArea =
-    inputs.doors * 20 + inputs.windows * 15 + inputs.sqFt * 0.5;
+    doorArea + inputs.windows * 15 + inputs.sqFt * 0.5;
   const trimCoverage = 300; // sq ft / gallon for trim paint
   const trimGallons = Math.ceil(
     ((trimArea * inputs.coats) / trimCoverage) * waste,
   );
 
-  // Door paint: doors × 20 sq ft × coats / 300, with 10% waste.
+  // Door paint: doorArea × coats / 300, with 10% waste.
   const doorGallons = Math.ceil(
-    ((inputs.doors * 20 * inputs.coats) / trimCoverage) * waste,
+    ((doorArea * inputs.coats) / trimCoverage) * waste,
   );
 
   // Materials takeoff. Caulk = doors + windows; everything else uses
@@ -131,6 +138,7 @@ export function calculateEstimate(inputs: ProjectInputs): Estimate | null {
     wallArea,
     ceilingArea,
     trimArea,
+    doorArea,
     wallGallons,
     ceilingGallons,
     primerGallons,

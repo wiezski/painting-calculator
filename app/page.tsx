@@ -335,6 +335,42 @@ function InputCard({
           step={1}
         />
 
+        <NumberField
+          label="Wall Rate (sq ft/hr)"
+          value={inputs.wallRate}
+          onChange={(v) => setField("wallRate", Math.max(1, v ?? 150))}
+          placeholder="150"
+          min={1}
+          step={5}
+        />
+
+        <NumberField
+          label="Ceiling Rate (sq ft/hr)"
+          value={inputs.ceilingRate}
+          onChange={(v) => setField("ceilingRate", Math.max(1, v ?? 200))}
+          placeholder="200"
+          min={1}
+          step={5}
+        />
+
+        <NumberField
+          label="Trim Rate (sq ft/hr)"
+          value={inputs.trimRate}
+          onChange={(v) => setField("trimRate", Math.max(1, v ?? 80))}
+          placeholder="80"
+          min={1}
+          step={5}
+        />
+
+        <NumberField
+          label="Door Rate (doors/hr)"
+          value={inputs.doorRate}
+          onChange={(v) => setField("doorRate", Math.max(0.1, v ?? 2))}
+          placeholder="2"
+          min={0.1}
+          step={0.5}
+        />
+
         <label className="col-span-1 flex select-none items-center gap-2 sm:col-span-2">
           <input
             type="checkbox"
@@ -553,7 +589,13 @@ function ResultArea({
           </div>
 
           {compareStores && allStoreCosts ? (
-            <StoreComparison allStoreCosts={allStoreCosts} />
+            <StoreComparison
+              allStoreCosts={allStoreCosts}
+              onSelectStore={(s) => {
+                onStoreChange(s);
+                onToggleCompare();
+              }}
+            />
           ) : (
             <div className="space-y-5">
               <CostSubsection title="Paint costs">
@@ -611,51 +653,59 @@ function ResultArea({
       )}
 
       {costs && !compareStores && (
+        <Card title="Labor Breakdown">
+          <Grid>
+            <Stat label="Walls (hrs)" value={costs.labor.wallHours.toFixed(1)} />
+            <Stat
+              label="Ceilings (hrs)"
+              value={costs.labor.ceilingHours.toFixed(1)}
+            />
+            <Stat label="Trim (hrs)" value={costs.labor.trimHours.toFixed(1)} />
+            <Stat label="Doors (hrs)" value={costs.labor.doorHours.toFixed(1)} />
+            <Stat
+              label="Total Hours"
+              value={costs.labor.totalHours.toFixed(1)}
+            />
+            <Stat
+              label="Labor Cost"
+              value={fmtMoney(costs.labor.laborCost)}
+            />
+          </Grid>
+        </Card>
+      )}
+
+      {costs && !compareStores && (
         <Card title="Job Pricing">
-          <div className="space-y-5">
-            <CostSubsection title="Materials">
-              <Grid>
-                <Stat
-                  label="Materials Cost"
-                  value={fmtMoney(costs.jobPricing.materials)}
-                />
-              </Grid>
-            </CostSubsection>
-
-            <CostSubsection title="Labor">
-              <Grid>
-                <Stat
-                  label="Hours"
-                  value={costs.labor.hours.toFixed(1)}
-                />
-                <Stat
-                  label="Cost / Painter"
-                  value={fmtMoney(costs.labor.costPerPainter)}
-                />
-                <Stat
-                  label="Total Labor"
-                  value={fmtMoney(costs.labor.totalCost)}
-                />
-              </Grid>
-            </CostSubsection>
-
-            <CostSubsection title="Totals">
-              <Grid>
-                <Stat
-                  label="Subtotal"
-                  value={fmtMoney(costs.jobPricing.subtotal)}
-                />
-                <Stat
-                  label="Markup Amount"
-                  value={fmtMoney(costs.jobPricing.markupAmount)}
-                />
-                <Stat
-                  label="Final Price"
-                  value={fmtMoney(costs.jobPricing.finalPrice)}
-                />
-              </Grid>
-            </CostSubsection>
-          </div>
+          <Grid>
+            <Stat
+              label="Material Cost"
+              value={fmtMoney(costs.jobPricing.materials)}
+            />
+            <Stat
+              label="Labor Cost"
+              value={fmtMoney(costs.jobPricing.labor)}
+            />
+            <Stat
+              label="Subtotal"
+              value={fmtMoney(costs.jobPricing.subtotal)}
+            />
+            <Stat
+              label="Markup"
+              value={fmtMoney(costs.jobPricing.markupAmount)}
+            />
+            <Stat
+              label="Final Price"
+              value={fmtMoney(costs.jobPricing.finalPrice)}
+            />
+            <Stat
+              label="Profit"
+              value={fmtMoney(costs.jobPricing.profit)}
+            />
+            <Stat
+              label="Margin"
+              value={`${costs.jobPricing.marginPct.toFixed(1)}%`}
+            />
+          </Grid>
         </Card>
       )}
     </section>
@@ -685,11 +735,13 @@ function CostSubsection({
 // neutral note instead.
 function StoreComparison({
   allStoreCosts,
+  onSelectStore,
 }: {
   allStoreCosts: Array<{
     store: { id: Store; label: string };
     costs: ReturnType<typeof computeCosts>;
   }>;
+  onSelectStore: (s: Store) => void;
 }) {
   const totals = allStoreCosts.map((s) => s.costs.totals.grand);
   const minTotal = Math.min(...totals);
@@ -755,6 +807,18 @@ function StoreComparison({
                   Save {fmtMoney(spread)} vs highest option
                 </p>
               )}
+
+              <button
+                type="button"
+                onClick={() => onSelectStore(s.id)}
+                className={`mt-3 w-full rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                  isBest
+                    ? "border-emerald-500 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25"
+                    : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"
+                }`}
+              >
+                Use this store
+              </button>
             </div>
           );
         })}

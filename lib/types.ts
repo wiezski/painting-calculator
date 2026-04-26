@@ -17,6 +17,12 @@ export type ProjectInputs = {
   hourlyRate: number;
   numberOfPainters: number;
   markup: number; // percent, e.g. 30 = +30 %
+  // Production rates — sq ft / hr, except doorRate which is doors / hr.
+  // Editable so contractors can tune to their crew's actual pace.
+  wallRate: number;
+  ceilingRate: number;
+  trimRate: number;
+  doorRate: number;
 };
 
 // What the AI extracts from uploaded plans. These are *suggestions* —
@@ -46,6 +52,7 @@ export interface Estimate {
   wallArea: number;
   ceilingArea: number;
   trimArea: number;
+  doorArea: number; // doors × 20
   wallGallons: number;
   ceilingGallons: number;
   primerGallons: number;
