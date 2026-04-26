@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_INPUTS,
   calculateEstimate,
@@ -44,7 +44,16 @@ export default function Page() {
   // NOTE: there is intentionally NO useEffect that copies aiSuggestions
   // into inputs. Adding one would re-introduce the override bug.
 
-  const result = isValidInputs(inputs) ? calculateEstimate(inputs) : null;
+  // Reactive result: recomputes immediately whenever any field of
+  // `inputs` changes (sqFt, wallHeight, multiplier, coats, prime).
+  // useMemo is referentially stable when nothing has changed, but
+  // because we depend on the entire `inputs` object, any setInputs
+  // call that returns a new object — including from Apply — triggers
+  // a fresh calculation on the next render.
+  const result = useMemo(() => {
+    if (!isValidInputs(inputs)) return null;
+    return calculateEstimate(inputs);
+  }, [inputs]);
 
   const setField = <K extends keyof ProjectInputs>(
     key: K,
@@ -499,6 +508,7 @@ function Suggestions({
     // Always present. null for informational rows that don't map to inputs.
     currentValue: number | null;
     note?: string;
+    unit?: string; // appended to AI value in the Apply button label
   };
 
   const rows: Row[] = [
@@ -507,12 +517,14 @@ function Suggestions({
       aiValue: extracted.finished_sq_ft,
       field: "sqFt",
       currentValue: inputs.sqFt,
+      unit: "sq ft",
     },
     {
       label: "Wall / ceiling height (ft)",
       aiValue: extracted.ceiling_height_ft,
       field: "wallHeight",
       currentValue: inputs.wallHeight,
+      unit: "ft",
     },
     {
       label: "Doors",
@@ -618,7 +630,9 @@ function Suggestions({
                     </span>
                   )}
 
-                  {/* Apply: disabled when AI = current or no AI value */}
+                  {/* Apply: disabled when AI = current or no AI value.
+                      Label shows the AI value with units so it's
+                      crystal clear what the click will do. */}
                   {isApplyable && r.aiValue !== null && (
                     <button
                       type="button"
@@ -632,7 +646,9 @@ function Suggestions({
                             : "border-zinc-700 text-zinc-300 hover:border-amber-500 hover:text-amber-300"
                       }`}
                     >
-                      {recentlyApplied === r.field ? "Applied ✓" : "Apply"}
+                      {recentlyApplied === r.field
+                        ? "Applied ✓"
+                        : `Apply AI (${r.aiValue.toLocaleString()}${r.unit ? " " + r.unit : ""})`}
                     </button>
                   )}
                 </div>
