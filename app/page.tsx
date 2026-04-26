@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   DEFAULT_INPUTS,
   calculateEstimate,
@@ -56,18 +56,14 @@ export default function Page() {
     value: ProjectInputs[K],
   ) => setInputs((prev) => ({ ...prev, [key]: value }));
 
-  const onFiles = useCallback((picked: FileList | File[] | null) => {
-    if (!picked) return;
-    setFiles(Array.from(picked));
-    setAi({ status: "idle" });
-  }, []);
-
-  const analyze = async () => {
-    if (!files.length) return;
+  // runAnalyze takes the files explicitly so the auto-trigger path
+  // doesn't have to wait for setFiles to flush.
+  const runAnalyze = async (filesToAnalyze: File[]) => {
+    if (!filesToAnalyze.length) return;
     setAi({ status: "uploading" });
     try {
       const fd = new FormData();
-      for (const f of files) fd.append("files", f);
+      for (const f of filesToAnalyze) fd.append("files", f);
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
@@ -82,20 +78,36 @@ export default function Page() {
       setAi({ status: "ready" });
       // Auto-fill the editable inputs with whatever AI returned.
       // If a field came back null, keep whatever the user already
-      // had. The user can edit any field before confirming.
+      // had. The user can edit any field afterward.
       setInputs((prev) => ({
         ...prev,
         sqFt: extracted.finished_sq_ft ?? prev.sqFt,
         wallHeight: extracted.ceiling_height_ft ?? prev.wallHeight,
       }));
-      // Force a re-confirm — fresh AI suggestion means fresh review.
-      setConfirmed(false);
+      // Note: confirmed is NOT reset here. Once the user has confirmed,
+      // calculations stay live and update on every input change —
+      // including changes from a fresh AI run.
     } catch (e) {
       setAi({
         status: "error",
         message: e instanceof Error ? e.message : "Network error",
       });
     }
+  };
+
+  // Manual re-run of the same files (button in the panel).
+  const analyze = () => runAnalyze(files);
+
+  // Single entry point for drag-and-drop AND the hidden file input.
+  // Auto-triggers AI analysis on selection.
+  const onFiles = (picked: FileList | File[] | null) => {
+    if (!picked) return;
+    const arr = Array.from(picked);
+    if (!arr.length) return;
+    setFiles(arr);
+    setAi({ status: "idle" });
+    setAiSuggestions(null);
+    runAnalyze(arr);
   };
 
   const clearAi = () => {
@@ -144,7 +156,6 @@ export default function Page() {
         confirmed={confirmed}
         canConfirm={isValidInputs(inputs)}
         onConfirm={() => setConfirmed(true)}
-        onEdit={() => setConfirmed(false)}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -301,14 +312,12 @@ function ResultArea({
   confirmed,
   canConfirm,
   onConfirm,
-  onEdit,
 }: {
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
   confirmed: boolean;
   canConfirm: boolean;
   onConfirm: () => void;
-  onEdit: () => void;
 }) {
   // Step 3a — not confirmed yet: show the gate.
   if (!confirmed) {
@@ -349,15 +358,8 @@ function ResultArea({
 
   return (
     <section className="mt-6 space-y-4">
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={onEdit}
-          className="text-xs text-zinc-400 underline-offset-4 hover:text-zinc-200 hover:underline"
-        >
-          Edit inputs
-        </button>
-      </div>
+      {/* No "Edit inputs" gate — once confirmed, results stay live and
+          recalculate on every input change. */}
       <Card title="Project Summary">
         <Grid>
           <Stat label="Sq Ft" value={fmt(inputs.sqFt)} />
@@ -434,54 +436,14 @@ function AiSuggestPanel({
         value before confirming.
       </p>
 
-      <div className="mt-4">
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept="application/pdf,image/png,image/jpeg,image/gif,image/webp"
-          onChange={(e) => onFiles(e.target.files)}
-          className="hidden"
-        />
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-100 hover:bg-zinc-800"
-          >
-            Choose files
-          </button>
-          <button
-            type="button"
-            onClick={analyze}
-            disabled={!files.length || ai.status === "uploading"}
-            className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-medium text-black hover:bg-amber-400 disabled:opacity-40"
-          >
-            {ai.status === "uploading" ? "Analyzing…" : "Suggest values"}
-          </button>
-          {(files.length > 0 || ai.status === "ready" || ai.status === "error") && (
-            <button
-              type="button"
-              onClick={clear}
-              className="text-xs text-zinc-400 hover:text-zinc-200"
-            >
-              Clear
-            </button>
-          )}
-        </div>
-        {files.length > 0 && (
-          <ul className="mt-3 space-y-1 text-xs text-zinc-400">
-            {files.map((f, i) => (
-              <li key={i} className="flex justify-between">
-                <span className="truncate">{f.name}</span>
-                <span className="ml-4 shrink-0 text-zinc-600">
-                  {(f.size / 1024 / 1024).toFixed(2)} MB
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <Dropzone
+        files={files}
+        ai={ai}
+        inputRef={inputRef}
+        onFiles={onFiles}
+        analyze={analyze}
+        clear={clear}
+      />
 
       {ai.status === "error" && (
         <div className="mt-4 rounded-md border border-red-900/60 bg-red-950/40 p-3 text-xs text-red-300">
@@ -493,6 +455,121 @@ function AiSuggestPanel({
         <Suggestions extracted={aiSuggestions} />
       )}
     </section>
+  );
+}
+
+// Drag-and-drop + click-to-upload zone. Selecting files auto-triggers
+// onFiles, which the parent uses to start AI analysis immediately.
+function Dropzone({
+  files,
+  ai,
+  inputRef,
+  onFiles,
+  analyze,
+  clear,
+}: {
+  files: File[];
+  ai: AiState;
+  inputRef: React.RefObject<HTMLInputElement>;
+  onFiles: (f: FileList | File[] | null) => void;
+  analyze: () => void;
+  clear: () => void;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length) {
+      onFiles(e.dataTransfer.files);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onFiles(e.target.files);
+    // Reset so picking the same file again still fires onChange.
+    e.target.value = "";
+  };
+
+  const handleClick = () => inputRef.current?.click();
+
+  return (
+    <div className="mt-4">
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept="application/pdf,image/png,image/jpeg,image/gif,image/webp"
+        onChange={handleFileChange}
+        className="hidden"
+      />
+
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={handleClick}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleClick();
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+        className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-8 text-center transition ${
+          dragOver
+            ? "border-amber-500 bg-amber-500/5"
+            : "border-zinc-700 hover:border-zinc-500 hover:bg-zinc-900/40"
+        }`}
+      >
+        <p className="text-sm text-zinc-200">
+          {ai.status === "uploading"
+            ? "Analyzing…"
+            : "Drag & drop a plan here or click to upload"}
+        </p>
+        <p className="mt-1 text-xs text-zinc-500">
+          PDF, PNG, JPEG, GIF, or WebP
+        </p>
+      </div>
+
+      {files.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs text-zinc-400">
+          {files.map((f, i) => (
+            <li key={i} className="flex justify-between">
+              <span className="truncate">{f.name}</span>
+              <span className="ml-4 shrink-0 text-zinc-600">
+                {(f.size / 1024 / 1024).toFixed(2)} MB
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Manual re-run + clear actions, available once files are picked. */}
+      {(files.length > 0 || ai.status === "ready" || ai.status === "error") && (
+        <div className="mt-3 flex items-center gap-3 text-xs">
+          <button
+            type="button"
+            onClick={analyze}
+            disabled={!files.length || ai.status === "uploading"}
+            className="rounded-md border border-zinc-700 px-2.5 py-1 text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {ai.status === "uploading" ? "Analyzing…" : "Re-run AI"}
+          </button>
+          <button
+            type="button"
+            onClick={clear}
+            className="text-zinc-400 hover:text-zinc-200"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
