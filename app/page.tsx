@@ -39,9 +39,12 @@ export default function Page() {
   // produces a result. This is the gate that turns the page from
   // "AI suggests / user edits" mode into "show me the numbers" mode.
   const [confirmed, setConfirmed] = useState(false);
-  // Selected store for the cost breakdown. Stored in state, but
-  // doesn't change pricing yet (V1 — no API calls).
+  // Selected store for the single-store cost breakdown. Stored in
+  // state, but doesn't change pricing yet (V1 — no API calls).
   const [store, setStore] = useState<Store>("sherwin-williams");
+  // Compare-stores mode swaps the per-line view for a 3-column
+  // store-vs-store totals view inside the Costs card.
+  const [compareStores, setCompareStores] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Reactive result, gated on confirm + valid inputs (sqFt, wallHeight,
@@ -58,6 +61,16 @@ export default function Page() {
     if (!result) return null;
     return computeCosts(result, store);
   }, [result, store]);
+
+  // Per-store costs for the comparison view. Computed regardless of
+  // the toggle so flipping into compare mode is instant.
+  const allStoreCosts = useMemo(() => {
+    if (!result) return null;
+    return STORES.map((s) => ({
+      store: s,
+      costs: computeCosts(result, s.id),
+    }));
+  }, [result]);
 
   const setField = <K extends keyof ProjectInputs>(
     key: K,
@@ -164,8 +177,11 @@ export default function Page() {
         result={result}
         inputs={inputs}
         costs={costs}
+        allStoreCosts={allStoreCosts}
         store={store}
         onStoreChange={setStore}
+        compareStores={compareStores}
+        onToggleCompare={() => setCompareStores((v) => !v)}
         confirmed={confirmed}
         canConfirm={isValidInputs(inputs)}
         onConfirm={() => setConfirmed(true)}
@@ -357,8 +373,11 @@ function ResultArea({
   result,
   inputs,
   costs,
+  allStoreCosts,
   store,
   onStoreChange,
+  compareStores,
+  onToggleCompare,
   confirmed,
   canConfirm,
   onConfirm,
@@ -366,8 +385,16 @@ function ResultArea({
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
   costs: ReturnType<typeof computeCosts> | null;
+  allStoreCosts:
+    | Array<{
+        store: { id: Store; label: string };
+        costs: ReturnType<typeof computeCosts>;
+      }>
+    | null;
   store: Store;
   onStoreChange: (s: Store) => void;
+  compareStores: boolean;
+  onToggleCompare: () => void;
   confirmed: boolean;
   canConfirm: boolean;
   onConfirm: () => void;
@@ -460,71 +487,93 @@ function ResultArea({
 
       {costs && (
         <Card title="Costs">
-          <div className="mb-5 flex items-center justify-between gap-3">
-            <span className="text-xs uppercase tracking-wide text-zinc-500">
-              Store
-            </span>
-            <select
-              value={store}
-              onChange={(e) => onStoreChange(e.target.value as Store)}
-              className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 focus:border-amber-500 focus:outline-none"
-            >
-              {STORES.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-5">
-            <CostSubsection title="Paint costs">
-              <Grid>
-                <Stat
-                  label="Walls"
-                  value={fmtMoney(costs.paintCosts.walls)}
-                />
-                <Stat
-                  label="Ceilings"
-                  value={fmtMoney(costs.paintCosts.ceilings)}
-                />
-                <Stat label="Trim" value={fmtMoney(costs.paintCosts.trim)} />
-                <Stat
-                  label="Primer"
-                  value={fmtMoney(costs.paintCosts.primer)}
-                />
-              </Grid>
-            </CostSubsection>
-
-            <CostSubsection title="Material costs">
-              <Grid>
-                {costs.materialCosts.map((m) => (
-                  <Stat
-                    key={m.name}
-                    label={m.name}
-                    value={fmtMoney(m.cost)}
-                  />
+          {/* Top bar: store selector + compare toggle */}
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="text-xs uppercase tracking-wide text-zinc-500">
+                Store
+              </span>
+              <select
+                value={store}
+                onChange={(e) => onStoreChange(e.target.value as Store)}
+                disabled={compareStores}
+                className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 focus:border-amber-500 focus:outline-none disabled:opacity-40"
+              >
+                {STORES.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
                 ))}
-              </Grid>
-            </CostSubsection>
-
-            <CostSubsection title="Totals">
-              <Grid>
-                <Stat
-                  label="Paint Total"
-                  value={fmtMoney(costs.totals.paint)}
-                />
-                <Stat
-                  label="Materials Total"
-                  value={fmtMoney(costs.totals.materials)}
-                />
-                <Stat
-                  label="Grand Total"
-                  value={fmtMoney(costs.totals.grand)}
-                />
-              </Grid>
-            </CostSubsection>
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={onToggleCompare}
+              className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                compareStores
+                  ? "border-amber-500 bg-amber-500/10 text-amber-300"
+                  : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"
+              }`}
+            >
+              {compareStores ? "Hide comparison" : "Compare stores"}
+            </button>
           </div>
+
+          {compareStores && allStoreCosts ? (
+            <StoreComparison allStoreCosts={allStoreCosts} />
+          ) : (
+            <div className="space-y-5">
+              <CostSubsection title="Paint costs">
+                <Grid>
+                  <Stat
+                    label="Walls"
+                    value={fmtMoney(costs.paintCosts.walls)}
+                  />
+                  <Stat
+                    label="Ceilings"
+                    value={fmtMoney(costs.paintCosts.ceilings)}
+                  />
+                  <Stat
+                    label="Trim"
+                    value={fmtMoney(costs.paintCosts.trim)}
+                  />
+                  <Stat
+                    label="Primer"
+                    value={fmtMoney(costs.paintCosts.primer)}
+                  />
+                </Grid>
+              </CostSubsection>
+
+              <CostSubsection title="Material costs">
+                <Grid>
+                  {costs.materialCosts.map((m) => (
+                    <Stat
+                      key={m.name}
+                      label={m.name}
+                      value={fmtMoney(m.cost)}
+                    />
+                  ))}
+                </Grid>
+              </CostSubsection>
+
+              <CostSubsection title="Totals">
+                <Grid>
+                  <Stat
+                    label="Paint Total"
+                    value={fmtMoney(costs.totals.paint)}
+                  />
+                  <Stat
+                    label="Materials Total"
+                    value={fmtMoney(costs.totals.materials)}
+                  />
+                  <Stat
+                    label="Grand Total"
+                    value={fmtMoney(costs.totals.grand)}
+                  />
+                </Grid>
+              </CostSubsection>
+            </div>
+          )}
         </Card>
       )}
     </section>
@@ -544,6 +593,98 @@ function CostSubsection({
         {title}
       </h4>
       {children}
+    </div>
+  );
+}
+
+// 3-column comparison of paint / materials / grand totals across
+// stores. Highlights the lowest grand total when there's a real
+// spread; if pricing is currently uniform across stores, shows a
+// neutral note instead.
+function StoreComparison({
+  allStoreCosts,
+}: {
+  allStoreCosts: Array<{
+    store: { id: Store; label: string };
+    costs: ReturnType<typeof computeCosts>;
+  }>;
+}) {
+  const totals = allStoreCosts.map((s) => s.costs.totals.grand);
+  const minTotal = Math.min(...totals);
+  const maxTotal = Math.max(...totals);
+  const spread = maxTotal - minTotal;
+
+  return (
+    <div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {allStoreCosts.map(({ store: s, costs: c }) => {
+          const isBest = c.totals.grand === minTotal && spread > 0;
+          return (
+            <div
+              key={s.id}
+              className={`rounded-lg border p-4 transition ${
+                isBest
+                  ? "border-emerald-500 bg-emerald-500/10"
+                  : "border-zinc-800 bg-zinc-950/40"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-zinc-100">
+                  {s.label}
+                </h4>
+                {isBest && (
+                  <span className="rounded border border-emerald-700/60 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-300">
+                    Lowest
+                  </span>
+                )}
+              </div>
+
+              <dl className="mt-3 space-y-1.5 text-sm">
+                <div className="flex justify-between text-zinc-400">
+                  <dt>Paint</dt>
+                  <dd className="font-medium text-zinc-100">
+                    {fmtMoney(c.totals.paint)}
+                  </dd>
+                </div>
+                <div className="flex justify-between text-zinc-400">
+                  <dt>Materials</dt>
+                  <dd className="font-medium text-zinc-100">
+                    {fmtMoney(c.totals.materials)}
+                  </dd>
+                </div>
+                <div
+                  className={`mt-2 flex justify-between border-t pt-2 ${
+                    isBest ? "border-emerald-700/40" : "border-zinc-800"
+                  }`}
+                >
+                  <dt className="font-medium text-zinc-200">Grand Total</dt>
+                  <dd
+                    className={`text-base font-semibold ${
+                      isBest ? "text-emerald-300" : "text-zinc-100"
+                    }`}
+                  >
+                    {fmtMoney(c.totals.grand)}
+                  </dd>
+                </div>
+              </dl>
+
+              {isBest && (
+                <p className="mt-2 text-xs text-emerald-400">
+                  Save {fmtMoney(spread)} vs highest option
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {spread === 0 && (
+        <p className="mt-3 text-xs text-zinc-500">
+          Pricing is currently uniform across stores. When per-store
+          pricing comes online, the lowest grand total will be highlighted
+          here automatically.
+        </p>
+      )}
     </div>
   );
 }
