@@ -228,6 +228,8 @@ function InputCard({
 
         <NumberField
           label="Wall Multiplier"
+          // Falls back to 2.6 if cleared so the field always holds a
+          // number (matches ProjectInputs.wallMultiplier: number).
           value={inputs.wallMultiplier}
           onChange={(v) => setField("wallMultiplier", v ?? 2.6)}
           placeholder="2.6"
@@ -237,6 +239,7 @@ function InputCard({
 
         <NumberField
           label="Coats"
+          // Coats is always a positive integer.
           value={inputs.coats}
           onChange={(v) => setField("coats", Math.max(1, Math.round(v ?? 2)))}
           placeholder="2"
@@ -287,13 +290,18 @@ function NumberField({
         // Reads ONLY from the inputs state passed in via `value`.
         // Never reads from aiSuggestions.
         value={value ?? ""}
+        // Converts the raw input value to a Number on every keystroke
+        // and bubbles it up. Empty string → null so required-field
+        // validation works. NaN guard handles any edge case where the
+        // browser gives us non-numeric content.
         onChange={(e) => {
           const raw = e.target.value;
-          if (raw === "") onChange(null);
-          else {
-            const n = parseFloat(raw);
-            onChange(Number.isFinite(n) ? n : null);
+          if (raw === "") {
+            onChange(null);
+            return;
           }
+          const n = Number(raw);
+          onChange(Number.isFinite(n) ? n : null);
         }}
         placeholder={placeholder}
         min={min}
