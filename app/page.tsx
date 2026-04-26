@@ -141,6 +141,9 @@ export default function Page() {
         files={files}
         ai={ai}
         aiSuggestions={aiSuggestions}
+        // The panel needs the current inputs ONLY for read-only display,
+        // so each row can show "AI: x  Current: y" and compare.
+        inputs={inputs}
         inputRef={inputRef}
         onFiles={onFiles}
         analyze={analyze}
@@ -376,6 +379,7 @@ function AiSuggestPanel({
   files,
   ai,
   aiSuggestions,
+  inputs,
   inputRef,
   onFiles,
   analyze,
@@ -386,6 +390,7 @@ function AiSuggestPanel({
   files: File[];
   ai: AiState;
   aiSuggestions: Extracted | null;
+  inputs: ProjectInputs;
   inputRef: React.RefObject<HTMLInputElement>;
   onFiles: (f: FileList | File[] | null) => void;
   analyze: () => void;
@@ -462,6 +467,7 @@ function AiSuggestPanel({
       {ai.status === "ready" && aiSuggestions && (
         <Suggestions
           extracted={aiSuggestions}
+          inputs={inputs}
           applySuggestion={applySuggestion}
           recentlyApplied={recentlyApplied}
         />
@@ -470,49 +476,61 @@ function AiSuggestPanel({
   );
 }
 
-// AI Suggestions display. Read-only: takes extracted data and renders
-// it. Apply buttons hand the field name back to the parent — the parent
-// is responsible for reading the current AI value and calling setInputs.
-// This component never imports or knows about the inputs state.
+// AI Suggestions display. Read-only AI data on the left, current inputs
+// on the right. The two never sync — `extracted` is frozen from the
+// last analyze; `inputs` is what the user sees in the form. Apply is
+// the only path from one to the other and is disabled when the values
+// already match.
 function Suggestions({
   extracted,
+  inputs,
   applySuggestion,
   recentlyApplied,
 }: {
   extracted: Extracted;
+  inputs: ProjectInputs;
   applySuggestion: (field: "sqFt" | "wallHeight") => void;
   recentlyApplied: keyof ProjectInputs | null;
 }) {
-  const items: Array<{
+  type Row = {
     label: string;
-    value: number | null;
+    aiValue: number | null;
     field?: "sqFt" | "wallHeight";
+    // Always present. null for informational rows that don't map to inputs.
+    currentValue: number | null;
     note?: string;
-  }> = [
+  };
+
+  const rows: Row[] = [
     {
       label: "Finished sq ft",
-      value: extracted.finished_sq_ft,
+      aiValue: extracted.finished_sq_ft,
       field: "sqFt",
+      currentValue: inputs.sqFt,
     },
     {
       label: "Wall / ceiling height (ft)",
-      value: extracted.ceiling_height_ft,
+      aiValue: extracted.ceiling_height_ft,
       field: "wallHeight",
+      currentValue: inputs.wallHeight,
     },
     {
       label: "Doors",
-      value: extracted.door_count,
+      aiValue: extracted.door_count,
+      currentValue: null,
       note: "informational",
     },
     {
       label: "Windows",
-      value: extracted.window_count,
+      aiValue: extracted.window_count,
+      currentValue: null,
       note: "informational",
     },
   ];
+
   return (
     <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
-      <div className="mb-2 flex items-center justify-between text-xs">
+      <div className="mb-3 flex items-center justify-between text-xs">
         <span className="uppercase tracking-wide text-zinc-500">
           AI suggestions
         </span>
@@ -528,41 +546,102 @@ function Suggestions({
           confidence: {extracted.confidence}
         </span>
       </div>
+
       <ul className="divide-y divide-zinc-800 text-sm">
-        {items.map((it) => (
-          <li
-            key={it.label}
-            className="flex items-center justify-between py-2"
-          >
-            <span className="text-zinc-300">{it.label}</span>
-            <div className="flex items-center gap-3">
-              <span className="text-zinc-100">
-                {it.value === null ? "—" : it.value.toLocaleString()}
-              </span>
-              {it.field && it.value !== null && (
-                <button
-                  type="button"
-                  // Pass only the field name. The parent reads the
-                  // current AI value inline, so no stale closure.
-                  onClick={() => applySuggestion(it.field!)}
-                  className={`rounded border px-2 py-0.5 text-xs transition ${
-                    recentlyApplied === it.field
-                      ? "border-emerald-500 text-emerald-300"
-                      : "border-zinc-700 text-zinc-300 hover:border-amber-500 hover:text-amber-300"
-                  }`}
-                >
-                  {recentlyApplied === it.field ? "Applied ✓" : "Apply"}
-                </button>
-              )}
-              {it.note && (
-                <span className="text-[10px] uppercase tracking-wide text-zinc-600">
-                  {it.note}
-                </span>
-              )}
-            </div>
-          </li>
-        ))}
+        {rows.map((r) => {
+          const isApplyable = !!r.field;
+          const matches =
+            isApplyable &&
+            r.aiValue !== null &&
+            r.currentValue !== null &&
+            r.aiValue === r.currentValue;
+          const differs =
+            isApplyable &&
+            r.aiValue !== null &&
+            r.currentValue !== null &&
+            r.aiValue !== r.currentValue;
+          const inputBlank = isApplyable && r.currentValue === null;
+
+          return (
+            <li key={r.label} className="py-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-zinc-300">{r.label}</span>
+
+                <div className="flex items-center gap-3 text-xs">
+                  {/* Two-column read-only display. */}
+                  <span className="text-zinc-400">
+                    <span className="text-zinc-500">AI:</span>{" "}
+                    <span className="font-medium text-zinc-100">
+                      {r.aiValue === null ? "—" : r.aiValue.toLocaleString()}
+                    </span>
+                  </span>
+
+                  {isApplyable && (
+                    <span
+                      className={
+                        differs ? "text-amber-300" : "text-zinc-400"
+                      }
+                    >
+                      <span className="text-zinc-500">Current:</span>{" "}
+                      <span
+                        className={`font-medium ${
+                          differs ? "text-amber-200" : "text-zinc-100"
+                        }`}
+                      >
+                        {r.currentValue === null
+                          ? "—"
+                          : r.currentValue.toLocaleString()}
+                      </span>
+                    </span>
+                  )}
+
+                  {/* Status badge */}
+                  {differs && (
+                    <span className="rounded border border-amber-700/60 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
+                      Different from AI
+                    </span>
+                  )}
+                  {matches && (
+                    <span className="rounded border border-emerald-700/60 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-300">
+                      Matches
+                    </span>
+                  )}
+                  {inputBlank && r.aiValue !== null && (
+                    <span className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+                      Not applied
+                    </span>
+                  )}
+
+                  {r.note && (
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-600">
+                      {r.note}
+                    </span>
+                  )}
+
+                  {/* Apply: disabled when AI = current or no AI value */}
+                  {isApplyable && r.aiValue !== null && (
+                    <button
+                      type="button"
+                      onClick={() => applySuggestion(r.field!)}
+                      disabled={matches}
+                      className={`rounded border px-2 py-0.5 transition ${
+                        recentlyApplied === r.field
+                          ? "border-emerald-500 text-emerald-300"
+                          : matches
+                            ? "cursor-not-allowed border-zinc-800 text-zinc-600"
+                            : "border-zinc-700 text-zinc-300 hover:border-amber-500 hover:text-amber-300"
+                      }`}
+                    >
+                      {recentlyApplied === r.field ? "Applied ✓" : "Apply"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </li>
+          );
+        })}
       </ul>
+
       {extracted.notes && (
         <p className="mt-3 text-xs text-zinc-400">{extracted.notes}</p>
       )}
