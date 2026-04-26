@@ -34,45 +34,27 @@ export default function Page() {
   const [files, setFiles] = useState<File[]>([]);
   const [ai, setAi] = useState<AiState>({ status: "idle" });
 
-  // Brief flag so the "Use AI values" button can confirm the action.
-  const [justAppliedAi, setJustAppliedAi] = useState(false);
+  // The user must explicitly confirm inputs before the calculator
+  // produces a result. This is the gate that turns the page from
+  // "AI suggests / user edits" mode into "show me the numbers" mode.
+  const [confirmed, setConfirmed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // NOTE: there is intentionally NO useEffect that copies aiSuggestions
-  // into inputs. Adding one would re-introduce the override bug.
-
-  // Reactive result: recomputes immediately whenever any field of
-  // `inputs` changes (sqFt, wallHeight, multiplier, coats, prime).
-  // useMemo is referentially stable when nothing has changed, but
-  // because we depend on the entire `inputs` object, any setInputs
-  // call that returns a new object — including from Apply — triggers
-  // a fresh calculation on the next render.
+  // Reactive result, gated on confirm:
+  //   1. Must be confirmed
+  //   2. Must have valid sqFt + wallHeight
+  // Editing after confirming still updates the result live —
+  // useMemo recomputes on any inputs change.
   const result = useMemo(() => {
+    if (!confirmed) return null;
     if (!isValidInputs(inputs)) return null;
     return calculateEstimate(inputs);
-  }, [inputs]);
+  }, [inputs, confirmed]);
 
   const setField = <K extends keyof ProjectInputs>(
     key: K,
     value: ProjectInputs[K],
   ) => setInputs((prev) => ({ ...prev, [key]: value }));
-
-  // The single, explicit connection from AI suggestions → inputs.
-  // One click fills the form with whatever AI returned; user can then
-  // edit anything before reading the result. There is no per-field
-  // Apply, no comparison UI, no "AI vs user" tug-of-war.
-  const useAiValues = () => {
-    if (!aiSuggestions) return;
-    setInputs({
-      sqFt: aiSuggestions.finished_sq_ft,
-      wallHeight: aiSuggestions.ceiling_height_ft,
-      wallMultiplier: 2.6,
-      coats: 2,
-      prime: true,
-    });
-    setJustAppliedAi(true);
-    window.setTimeout(() => setJustAppliedAi(false), 1800);
-  };
 
   const onFiles = useCallback((picked: FileList | File[] | null) => {
     if (!picked) return;
@@ -98,8 +80,16 @@ export default function Page() {
       const extracted = json.extracted as Extracted;
       setAiSuggestions(extracted);
       setAi({ status: "ready" });
-      // Inputs are NOT touched here. Suggestions only flow into
-      // inputs through the explicit Apply button.
+      // Auto-fill the editable inputs with whatever AI returned.
+      // If a field came back null, keep whatever the user already
+      // had. The user can edit any field before confirming.
+      setInputs((prev) => ({
+        ...prev,
+        sqFt: extracted.finished_sq_ft ?? prev.sqFt,
+        wallHeight: extracted.ceiling_height_ft ?? prev.wallHeight,
+      }));
+      // Force a re-confirm — fresh AI suggestion means fresh review.
+      setConfirmed(false);
     } catch (e) {
       setAi({
         status: "error",
@@ -114,6 +104,9 @@ export default function Page() {
     setAiSuggestions(null);
     if (inputRef.current) inputRef.current.value = "";
   };
+  // Note: editing an input does NOT auto-reset `confirmed`. The user
+  // has already chosen to see numbers; tweaking values just updates
+  // the result via useMemo. `confirmed` only resets when AI auto-fills.
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
@@ -128,10 +121,7 @@ export default function Page() {
         </p>
       </header>
 
-      <InputCard inputs={inputs} setField={setField} />
-
-      <ResultArea result={result} inputs={inputs} />
-
+      {/* Step 1 — AI assist (top, optional) */}
       <AiSuggestPanel
         files={files}
         ai={ai}
@@ -140,8 +130,21 @@ export default function Page() {
         onFiles={onFiles}
         analyze={analyze}
         clear={clearAi}
-        useAiValues={useAiValues}
-        justAppliedAi={justAppliedAi}
+      />
+
+      {/* Step 2 — Project inputs (auto-filled by AI or typed manually) */}
+      <div className="mt-6">
+        <InputCard inputs={inputs} setField={setField} />
+      </div>
+
+      {/* Step 3 — Confirm + result */}
+      <ResultArea
+        result={result}
+        inputs={inputs}
+        confirmed={confirmed}
+        canConfirm={isValidInputs(inputs)}
+        onConfirm={() => setConfirmed(true)}
+        onEdit={() => setConfirmed(false)}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -295,10 +298,47 @@ function NumberField({
 function ResultArea({
   result,
   inputs,
+  confirmed,
+  canConfirm,
+  onConfirm,
+  onEdit,
 }: {
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
+  confirmed: boolean;
+  canConfirm: boolean;
+  onConfirm: () => void;
+  onEdit: () => void;
 }) {
+  // Step 3a — not confirmed yet: show the gate.
+  if (!confirmed) {
+    return (
+      <section className="mt-6 rounded-xl border border-dashed border-zinc-800 bg-zinc-900/20 p-6 text-center">
+        <p className="text-sm text-zinc-400">
+          Review and confirm inputs to calculate estimate.
+        </p>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={!canConfirm}
+          className={`mt-4 rounded-md px-4 py-2 text-sm font-medium transition ${
+            canConfirm
+              ? "bg-amber-500 text-black hover:bg-amber-400"
+              : "cursor-not-allowed bg-zinc-800 text-zinc-500"
+          }`}
+        >
+          Confirm inputs
+        </button>
+        {!canConfirm && (
+          <p className="mt-3 text-xs text-zinc-500">
+            Square footage and wall height are required.
+          </p>
+        )}
+      </section>
+    );
+  }
+
+  // Step 3b — confirmed but inputs went invalid (user cleared a field).
   if (!result) {
     return (
       <section className="mt-6 rounded-xl border border-dashed border-zinc-800 bg-zinc-900/20 p-6 text-center text-sm text-zinc-400">
@@ -309,6 +349,15 @@ function ResultArea({
 
   return (
     <section className="mt-6 space-y-4">
+      <div className="flex items-center justify-end">
+        <button
+          type="button"
+          onClick={onEdit}
+          className="text-xs text-zinc-400 underline-offset-4 hover:text-zinc-200 hover:underline"
+        >
+          Edit inputs
+        </button>
+      </div>
       <Card title="Project Summary">
         <Grid>
           <Stat label="Sq Ft" value={fmt(inputs.sqFt)} />
@@ -365,8 +414,6 @@ function AiSuggestPanel({
   onFiles,
   analyze,
   clear,
-  useAiValues,
-  justAppliedAi,
 }: {
   files: File[];
   ai: AiState;
@@ -375,18 +422,16 @@ function AiSuggestPanel({
   onFiles: (f: FileList | File[] | null) => void;
   analyze: () => void;
   clear: () => void;
-  useAiValues: () => void;
-  justAppliedAi: boolean;
 }) {
   return (
-    <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
       <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
-        Optional · Let AI suggest values from plans
+        Step 1 · Optional — Let AI suggest values from plans
       </h2>
       <p className="mt-1 text-xs text-zinc-500">
-        Upload PDFs or images. Claude reads schedules and notes and suggests
-        sq ft and wall height. You can accept, edit, or ignore the
-        suggestions.
+        Upload PDFs or images. Claude reads schedules and notes and fills
+        the inputs below with sq ft and wall height. You can edit any
+        value before confirming.
       </p>
 
       <div className="mt-4">
@@ -445,29 +490,19 @@ function AiSuggestPanel({
       )}
 
       {ai.status === "ready" && aiSuggestions && (
-        <Suggestions
-          extracted={aiSuggestions}
-          useAiValues={useAiValues}
-          justAppliedAi={justAppliedAi}
-        />
+        <Suggestions extracted={aiSuggestions} />
       )}
     </section>
   );
 }
 
-// AI Suggestions display. Pure read-only — shows what the model
-// returned in a clean list. The user has exactly two options:
-//   1. Click "Use AI values" → fills the input form
-//   2. Ignore the suggestions and type values manually
-// No per-field Apply, no comparison, no live conflict states.
+// Pure read-only summary of what the AI returned. The fill happens
+// inside analyze(); this component just shows what was extracted
+// (and confidence + notes) for the user to verify.
 function Suggestions({
   extracted,
-  useAiValues,
-  justAppliedAi,
 }: {
   extracted: Extracted;
-  useAiValues: () => void;
-  justAppliedAi: boolean;
 }) {
   const items: Array<{
     label: string;
@@ -496,12 +531,6 @@ function Suggestions({
       note: "informational",
     },
   ];
-
-  // Only enable "Use AI values" if the AI returned at least one of
-  // the two required inputs. If the model came back blank, there's
-  // nothing useful to apply.
-  const hasUsable =
-    extracted.finished_sq_ft !== null || extracted.ceiling_height_ft !== null;
 
   return (
     <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
@@ -549,23 +578,10 @@ function Suggestions({
         <p className="mt-3 text-xs text-zinc-400">{extracted.notes}</p>
       )}
 
-      <div className="mt-4 flex items-center justify-between gap-3 text-xs text-zinc-500">
-        <span>You can use these values, or ignore them and type your own.</span>
-        <button
-          type="button"
-          onClick={useAiValues}
-          disabled={!hasUsable}
-          className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
-            justAppliedAi
-              ? "border-emerald-500 text-emerald-300"
-              : hasUsable
-                ? "border-amber-500 bg-amber-500 text-black hover:bg-amber-400"
-                : "cursor-not-allowed border-zinc-800 text-zinc-600"
-          }`}
-        >
-          {justAppliedAi ? "Applied ✓" : "Use AI values"}
-        </button>
-      </div>
+      <p className="mt-3 text-xs text-zinc-500">
+        These values were copied into the input fields below. Edit anything
+        before you confirm.
+      </p>
     </div>
   );
 }
