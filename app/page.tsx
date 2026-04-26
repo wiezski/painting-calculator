@@ -34,11 +34,8 @@ export default function Page() {
   const [files, setFiles] = useState<File[]>([]);
   const [ai, setAi] = useState<AiState>({ status: "idle" });
 
-  // Tracks the most recently applied AI suggestion so we can briefly
-  // highlight the input field and show "Applied".
-  const [recentlyApplied, setRecentlyApplied] = useState<
-    keyof ProjectInputs | null
-  >(null);
+  // Brief flag so the "Use AI values" button can confirm the action.
+  const [justAppliedAi, setJustAppliedAi] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // NOTE: there is intentionally NO useEffect that copies aiSuggestions
@@ -61,27 +58,20 @@ export default function Page() {
   ) => setInputs((prev) => ({ ...prev, [key]: value }));
 
   // The single, explicit connection from AI suggestions → inputs.
-  // Reads aiSuggestions inline so it always uses the freshest value
-  // — never a stale closure captured at render time.
-  const applySuggestion = (field: "sqFt" | "wallHeight") => {
+  // One click fills the form with whatever AI returned; user can then
+  // edit anything before reading the result. There is no per-field
+  // Apply, no comparison UI, no "AI vs user" tug-of-war.
+  const useAiValues = () => {
     if (!aiSuggestions) return;
-    if (field === "sqFt") {
-      if (aiSuggestions.finished_sq_ft === null) return;
-      setInputs((prev) => ({
-        ...prev,
-        sqFt: aiSuggestions.finished_sq_ft,
-      }));
-    } else if (field === "wallHeight") {
-      if (aiSuggestions.ceiling_height_ft === null) return;
-      setInputs((prev) => ({
-        ...prev,
-        wallHeight: aiSuggestions.ceiling_height_ft,
-      }));
-    }
-    setRecentlyApplied(field);
-    window.setTimeout(() => {
-      setRecentlyApplied((curr) => (curr === field ? null : curr));
-    }, 1800);
+    setInputs({
+      sqFt: aiSuggestions.finished_sq_ft,
+      wallHeight: aiSuggestions.ceiling_height_ft,
+      wallMultiplier: 2.6,
+      coats: 2,
+      prime: true,
+    });
+    setJustAppliedAi(true);
+    window.setTimeout(() => setJustAppliedAi(false), 1800);
   };
 
   const onFiles = useCallback((picked: FileList | File[] | null) => {
@@ -138,11 +128,7 @@ export default function Page() {
         </p>
       </header>
 
-      <InputCard
-        inputs={inputs}
-        setField={setField}
-        recentlyApplied={recentlyApplied}
-      />
+      <InputCard inputs={inputs} setField={setField} />
 
       <ResultArea result={result} inputs={inputs} />
 
@@ -150,15 +136,12 @@ export default function Page() {
         files={files}
         ai={ai}
         aiSuggestions={aiSuggestions}
-        // The panel needs the current inputs ONLY for read-only display,
-        // so each row can show "AI: x  Current: y" and compare.
-        inputs={inputs}
         inputRef={inputRef}
         onFiles={onFiles}
         analyze={analyze}
         clear={clearAi}
-        applySuggestion={applySuggestion}
-        recentlyApplied={recentlyApplied}
+        useAiValues={useAiValues}
+        justAppliedAi={justAppliedAi}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -174,14 +157,12 @@ export default function Page() {
 function InputCard({
   inputs,
   setField,
-  recentlyApplied,
 }: {
   inputs: ProjectInputs;
   setField: <K extends keyof ProjectInputs>(
     key: K,
     value: ProjectInputs[K],
   ) => void;
-  recentlyApplied: keyof ProjectInputs | null;
 }) {
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
@@ -198,7 +179,6 @@ function InputCard({
           placeholder="e.g. 2500"
           min={0}
           step={1}
-          flash={recentlyApplied === "sqFt"}
         />
 
         <div>
@@ -210,7 +190,6 @@ function InputCard({
             placeholder="required"
             min={0}
             step={0.5}
-            flash={recentlyApplied === "wallHeight"}
           />
           <div className="mt-2 flex gap-2">
             {[8, 9, 10].map((h) => {
@@ -273,7 +252,6 @@ function NumberField({
   required,
   min,
   step,
-  flash,
 }: {
   label: string;
   value: number | null;
@@ -282,7 +260,6 @@ function NumberField({
   required?: boolean;
   min?: number;
   step?: number;
-  flash?: boolean;
 }) {
   return (
     <label className="block">
@@ -307,11 +284,7 @@ function NumberField({
         placeholder={placeholder}
         min={min}
         step={step}
-        className={`w-full rounded-md border bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500 ${
-          flash
-            ? "border-amber-500 ring-2 ring-amber-500/40"
-            : "border-zinc-700"
-        }`}
+        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
       />
     </label>
   );
@@ -388,24 +361,22 @@ function AiSuggestPanel({
   files,
   ai,
   aiSuggestions,
-  inputs,
   inputRef,
   onFiles,
   analyze,
   clear,
-  applySuggestion,
-  recentlyApplied,
+  useAiValues,
+  justAppliedAi,
 }: {
   files: File[];
   ai: AiState;
   aiSuggestions: Extracted | null;
-  inputs: ProjectInputs;
   inputRef: React.RefObject<HTMLInputElement>;
   onFiles: (f: FileList | File[] | null) => void;
   analyze: () => void;
   clear: () => void;
-  applySuggestion: (field: "sqFt" | "wallHeight") => void;
-  recentlyApplied: keyof ProjectInputs | null;
+  useAiValues: () => void;
+  justAppliedAi: boolean;
 }) {
   return (
     <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
@@ -476,69 +447,61 @@ function AiSuggestPanel({
       {ai.status === "ready" && aiSuggestions && (
         <Suggestions
           extracted={aiSuggestions}
-          inputs={inputs}
-          applySuggestion={applySuggestion}
-          recentlyApplied={recentlyApplied}
+          useAiValues={useAiValues}
+          justAppliedAi={justAppliedAi}
         />
       )}
     </section>
   );
 }
 
-// AI Suggestions display. Read-only AI data on the left, current inputs
-// on the right. The two never sync — `extracted` is frozen from the
-// last analyze; `inputs` is what the user sees in the form. Apply is
-// the only path from one to the other and is disabled when the values
-// already match.
+// AI Suggestions display. Pure read-only — shows what the model
+// returned in a clean list. The user has exactly two options:
+//   1. Click "Use AI values" → fills the input form
+//   2. Ignore the suggestions and type values manually
+// No per-field Apply, no comparison, no live conflict states.
 function Suggestions({
   extracted,
-  inputs,
-  applySuggestion,
-  recentlyApplied,
+  useAiValues,
+  justAppliedAi,
 }: {
   extracted: Extracted;
-  inputs: ProjectInputs;
-  applySuggestion: (field: "sqFt" | "wallHeight") => void;
-  recentlyApplied: keyof ProjectInputs | null;
+  useAiValues: () => void;
+  justAppliedAi: boolean;
 }) {
-  type Row = {
+  const items: Array<{
     label: string;
-    aiValue: number | null;
-    field?: "sqFt" | "wallHeight";
-    // Always present. null for informational rows that don't map to inputs.
-    currentValue: number | null;
+    value: number | null;
+    unit?: string;
     note?: string;
-    unit?: string; // appended to AI value in the Apply button label
-  };
-
-  const rows: Row[] = [
+  }> = [
     {
       label: "Finished sq ft",
-      aiValue: extracted.finished_sq_ft,
-      field: "sqFt",
-      currentValue: inputs.sqFt,
+      value: extracted.finished_sq_ft,
       unit: "sq ft",
     },
     {
-      label: "Wall / ceiling height (ft)",
-      aiValue: extracted.ceiling_height_ft,
-      field: "wallHeight",
-      currentValue: inputs.wallHeight,
+      label: "Wall / ceiling height",
+      value: extracted.ceiling_height_ft,
       unit: "ft",
     },
     {
       label: "Doors",
-      aiValue: extracted.door_count,
-      currentValue: null,
+      value: extracted.door_count,
       note: "informational",
     },
     {
       label: "Windows",
-      aiValue: extracted.window_count,
-      currentValue: null,
+      value: extracted.window_count,
       note: "informational",
     },
   ];
+
+  // Only enable "Use AI values" if the AI returned at least one of
+  // the two required inputs. If the model came back blank, there's
+  // nothing useful to apply.
+  const hasUsable =
+    extracted.finished_sq_ft !== null || extracted.ceiling_height_ft !== null;
 
   return (
     <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
@@ -560,107 +523,49 @@ function Suggestions({
       </div>
 
       <ul className="divide-y divide-zinc-800 text-sm">
-        {rows.map((r) => {
-          const isApplyable = !!r.field;
-          const matches =
-            isApplyable &&
-            r.aiValue !== null &&
-            r.currentValue !== null &&
-            r.aiValue === r.currentValue;
-          const differs =
-            isApplyable &&
-            r.aiValue !== null &&
-            r.currentValue !== null &&
-            r.aiValue !== r.currentValue;
-          const inputBlank = isApplyable && r.currentValue === null;
-
-          return (
-            <li key={r.label} className="py-2">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-zinc-300">{r.label}</span>
-
-                <div className="flex items-center gap-3 text-xs">
-                  {/* Two-column read-only display. */}
-                  <span className="text-zinc-400">
-                    <span className="text-zinc-500">AI:</span>{" "}
-                    <span className="font-medium text-zinc-100">
-                      {r.aiValue === null ? "—" : r.aiValue.toLocaleString()}
-                    </span>
-                  </span>
-
-                  {isApplyable && (
-                    <span
-                      className={
-                        differs ? "text-amber-300" : "text-zinc-400"
-                      }
-                    >
-                      <span className="text-zinc-500">Current:</span>{" "}
-                      <span
-                        className={`font-medium ${
-                          differs ? "text-amber-200" : "text-zinc-100"
-                        }`}
-                      >
-                        {r.currentValue === null
-                          ? "—"
-                          : r.currentValue.toLocaleString()}
-                      </span>
-                    </span>
-                  )}
-
-                  {/* Status badge */}
-                  {differs && (
-                    <span className="rounded border border-amber-700/60 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
-                      Different from AI
-                    </span>
-                  )}
-                  {matches && (
-                    <span className="rounded border border-emerald-700/60 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-300">
-                      Matches
-                    </span>
-                  )}
-                  {inputBlank && r.aiValue !== null && (
-                    <span className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
-                      Not applied
-                    </span>
-                  )}
-
-                  {r.note && (
-                    <span className="text-[10px] uppercase tracking-wide text-zinc-600">
-                      {r.note}
-                    </span>
-                  )}
-
-                  {/* Apply: disabled when AI = current or no AI value.
-                      Label shows the AI value with units so it's
-                      crystal clear what the click will do. */}
-                  {isApplyable && r.aiValue !== null && (
-                    <button
-                      type="button"
-                      onClick={() => applySuggestion(r.field!)}
-                      disabled={matches}
-                      className={`rounded border px-2 py-0.5 transition ${
-                        recentlyApplied === r.field
-                          ? "border-emerald-500 text-emerald-300"
-                          : matches
-                            ? "cursor-not-allowed border-zinc-800 text-zinc-600"
-                            : "border-zinc-700 text-zinc-300 hover:border-amber-500 hover:text-amber-300"
-                      }`}
-                    >
-                      {recentlyApplied === r.field
-                        ? "Applied ✓"
-                        : `Apply AI (${r.aiValue.toLocaleString()}${r.unit ? " " + r.unit : ""})`}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </li>
-          );
-        })}
+        {items.map((it) => (
+          <li
+            key={it.label}
+            className="flex items-center justify-between py-2"
+          >
+            <span className="text-zinc-300">{it.label}</span>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="font-medium text-zinc-100">
+                {it.value === null
+                  ? "—"
+                  : `${it.value.toLocaleString()}${it.unit ? " " + it.unit : ""}`}
+              </span>
+              {it.note && (
+                <span className="text-[10px] uppercase tracking-wide text-zinc-600">
+                  {it.note}
+                </span>
+              )}
+            </div>
+          </li>
+        ))}
       </ul>
 
       {extracted.notes && (
         <p className="mt-3 text-xs text-zinc-400">{extracted.notes}</p>
       )}
+
+      <div className="mt-4 flex items-center justify-between gap-3 text-xs text-zinc-500">
+        <span>You can use these values, or ignore them and type your own.</span>
+        <button
+          type="button"
+          onClick={useAiValues}
+          disabled={!hasUsable}
+          className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
+            justAppliedAi
+              ? "border-emerald-500 text-emerald-300"
+              : hasUsable
+                ? "border-amber-500 bg-amber-500 text-black hover:bg-amber-400"
+                : "cursor-not-allowed border-zinc-800 text-zinc-600"
+          }`}
+        >
+          {justAppliedAi ? "Applied ✓" : "Use AI values"}
+        </button>
+      </div>
     </div>
   );
 }
