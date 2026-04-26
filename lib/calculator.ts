@@ -59,6 +59,8 @@ export const DEFAULT_INPUTS: ProjectInputs = {
   wallMultiplier: 2.6,
   coats: 2,
   prime: true,
+  doors: 10,
+  windows: 10,
 };
 
 export function isValidInputs(inputs: ProjectInputs): boolean {
@@ -96,15 +98,36 @@ export function calculateEstimate(inputs: ProjectInputs): Estimate | null {
     ? Math.ceil((wallArea / wallCoverage) * waste)
     : 0;
 
-  // Full materials takeoff list (see MATERIAL_CONFIG above).
-  const materials = computeMaterials(inputs.sqFt);
+  // Trim area = door perimeter (≈ 20 sq ft/door) + window perimeter
+  // (≈ 15 sq ft/window) + a 0.5×sqFt baseboard allowance.
+  const trimArea =
+    inputs.doors * 20 + inputs.windows * 15 + inputs.sqFt * 0.5;
+  const trimCoverage = 300; // sq ft / gallon for trim paint
+  const trimGallons = Math.ceil(
+    ((trimArea * inputs.coats) / trimCoverage) * waste,
+  );
+
+  // Door paint: doors × 20 sq ft × coats / 300, with 10% waste.
+  const doorGallons = Math.ceil(
+    ((inputs.doors * 20 * inputs.coats) / trimCoverage) * waste,
+  );
+
+  // Materials takeoff. Caulk = doors + windows; everything else uses
+  // the sq-ft / rate config in MATERIAL_CONFIG.
+  const materials = computeMaterials(
+    inputs.sqFt,
+    inputs.doors + inputs.windows,
+  );
 
   return {
     wallArea,
     ceilingArea,
+    trimArea,
     wallGallons,
     ceilingGallons,
     primerGallons,
+    trimGallons,
+    doorGallons,
     materials,
   };
 }

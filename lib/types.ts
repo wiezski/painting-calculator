@@ -2,13 +2,16 @@
 
 // What the user controls. Required fields default to null so we can
 // validate "user has explicitly entered a value" vs "we silently filled
-// in a placeholder".
+// in a placeholder". Doors / windows have a sensible default since the
+// calculator can run without them being plan-derived.
 export type ProjectInputs = {
   sqFt: number | null;
   wallHeight: number | null;
   wallMultiplier: number;
   coats: number;
   prime: boolean;
+  doors: number;
+  windows: number;
 };
 
 // What the AI extracts from uploaded plans. These are *suggestions* —
@@ -37,8 +40,11 @@ export interface MaterialItem {
 export interface Estimate {
   wallArea: number;
   ceilingArea: number;
+  trimArea: number;
   wallGallons: number;
   ceilingGallons: number;
   primerGallons: number;
+  trimGallons: number;
+  doorGallons: number;
   materials: MaterialItem[];
 }

@@ -83,6 +83,8 @@ export default function Page() {
         ...prev,
         sqFt: extracted.finished_sq_ft ?? prev.sqFt,
         wallHeight: extracted.ceiling_height_ft ?? prev.wallHeight,
+        doors: extracted.door_count ?? prev.doors,
+        windows: extracted.window_count ?? prev.windows,
       }));
       // Note: confirmed is NOT reset here. Once the user has confirmed,
       // calculations stay live and update on every input change —
@@ -247,6 +249,26 @@ function InputCard({
           step={1}
         />
 
+        <NumberField
+          label="Doors"
+          // Default 10. Always a non-negative integer.
+          value={inputs.doors}
+          onChange={(v) => setField("doors", Math.max(0, Math.round(v ?? 10)))}
+          placeholder="10"
+          min={0}
+          step={1}
+        />
+
+        <NumberField
+          label="Windows"
+          // Default 10. Always a non-negative integer.
+          value={inputs.windows}
+          onChange={(v) => setField("windows", Math.max(0, Math.round(v ?? 10)))}
+          placeholder="10"
+          min={0}
+          step={1}
+        />
+
         <label className="col-span-1 flex select-none items-center gap-2 sm:col-span-2">
           <input
             type="checkbox"
@@ -388,6 +410,7 @@ function ResultArea({
             label="Ceiling Area"
             value={`${fmt(result.ceilingArea)} sq ft`}
           />
+          <Stat label="Trim Area" value={`${fmt(result.trimArea)} sq ft`} />
         </Grid>
       </Card>
 
@@ -395,6 +418,8 @@ function ResultArea({
         <Grid>
           <Stat label="Walls" value={result.wallGallons} />
           <Stat label="Ceilings" value={result.ceilingGallons} />
+          <Stat label="Trim" value={result.trimGallons} />
+          <Stat label="Doors" value={result.doorGallons} />
           <Stat
             label="Primer"
             value={inputs.prime ? result.primerGallons : "off"}
