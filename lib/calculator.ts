@@ -59,21 +59,26 @@ export const DEFAULT_INPUTS: ProjectInputs = {
   wallMultiplier: 2.6,
   coats: 2,
   prime: true,
-  doors: 10,
-  windows: 10,
+  doors: null,
+  windows: null,
 };
 
 export function isValidInputs(inputs: ProjectInputs): boolean {
   return (
     inputs.sqFt !== null &&
     inputs.wallHeight !== null &&
+    inputs.doors !== null &&
+    inputs.windows !== null &&
     inputs.sqFt > 0 &&
-    inputs.wallHeight > 0
+    inputs.wallHeight > 0 &&
+    inputs.doors >= 0 &&
+    inputs.windows >= 0
   );
 }
 
 export function calculateEstimate(inputs: ProjectInputs): Estimate | null {
   if (!inputs.sqFt || !inputs.wallHeight) return null;
+  if (inputs.doors === null || inputs.windows === null) return null;
 
   const waste = 1.1;
   // Wall area scales with both the multiplier (which encodes typical

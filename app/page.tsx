@@ -6,6 +6,7 @@ import {
   calculateEstimate,
   isValidInputs,
 } from "@/lib/calculator";
+import { STORES, computeCosts, type Store } from "@/lib/pricing";
 import type { Extracted, ProjectInputs } from "@/lib/types";
 
 // Upload / analyze lifecycle. The extracted data is held separately
@@ -38,18 +39,25 @@ export default function Page() {
   // produces a result. This is the gate that turns the page from
   // "AI suggests / user edits" mode into "show me the numbers" mode.
   const [confirmed, setConfirmed] = useState(false);
+  // Selected store for the cost breakdown. Stored in state, but
+  // doesn't change pricing yet (V1 — no API calls).
+  const [store, setStore] = useState<Store>("sherwin-williams");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Reactive result, gated on confirm:
-  //   1. Must be confirmed
-  //   2. Must have valid sqFt + wallHeight
-  // Editing after confirming still updates the result live —
-  // useMemo recomputes on any inputs change.
+  // Reactive result, gated on confirm + valid inputs (sqFt, wallHeight,
+  // doors, windows all required). Editing any field after confirming
+  // recomputes the result live.
   const result = useMemo(() => {
     if (!confirmed) return null;
     if (!isValidInputs(inputs)) return null;
     return calculateEstimate(inputs);
   }, [inputs, confirmed]);
+
+  // Costs derived from the estimate + selected store.
+  const costs = useMemo(() => {
+    if (!result) return null;
+    return computeCosts(result, store);
+  }, [result, store]);
 
   const setField = <K extends keyof ProjectInputs>(
     key: K,
@@ -155,6 +163,9 @@ export default function Page() {
       <ResultArea
         result={result}
         inputs={inputs}
+        costs={costs}
+        store={store}
+        onStoreChange={setStore}
         confirmed={confirmed}
         canConfirm={isValidInputs(inputs)}
         onConfirm={() => setConfirmed(true)}
@@ -251,20 +262,26 @@ function InputCard({
 
         <NumberField
           label="Doors"
-          // Default 10. Always a non-negative integer.
+          required
+          // Required input. Null when blank, integer ≥ 0 otherwise.
           value={inputs.doors}
-          onChange={(v) => setField("doors", Math.max(0, Math.round(v ?? 10)))}
-          placeholder="10"
+          onChange={(v) =>
+            setField("doors", v === null ? null : Math.max(0, Math.round(v)))
+          }
+          placeholder="required"
           min={0}
           step={1}
         />
 
         <NumberField
           label="Windows"
-          // Default 10. Always a non-negative integer.
+          required
+          // Required input. Null when blank, integer ≥ 0 otherwise.
           value={inputs.windows}
-          onChange={(v) => setField("windows", Math.max(0, Math.round(v ?? 10)))}
-          placeholder="10"
+          onChange={(v) =>
+            setField("windows", v === null ? null : Math.max(0, Math.round(v)))
+          }
+          placeholder="required"
           min={0}
           step={1}
         />
@@ -339,12 +356,18 @@ function NumberField({
 function ResultArea({
   result,
   inputs,
+  costs,
+  store,
+  onStoreChange,
   confirmed,
   canConfirm,
   onConfirm,
 }: {
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
+  costs: ReturnType<typeof computeCosts> | null;
+  store: Store;
+  onStoreChange: (s: Store) => void;
   confirmed: boolean;
   canConfirm: boolean;
   onConfirm: () => void;
@@ -434,8 +457,99 @@ function ResultArea({
           ))}
         </Grid>
       </Card>
+
+      {costs && (
+        <Card title="Costs">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <span className="text-xs uppercase tracking-wide text-zinc-500">
+              Store
+            </span>
+            <select
+              value={store}
+              onChange={(e) => onStoreChange(e.target.value as Store)}
+              className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 focus:border-amber-500 focus:outline-none"
+            >
+              {STORES.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-5">
+            <CostSubsection title="Paint costs">
+              <Grid>
+                <Stat
+                  label="Walls"
+                  value={fmtMoney(costs.paintCosts.walls)}
+                />
+                <Stat
+                  label="Ceilings"
+                  value={fmtMoney(costs.paintCosts.ceilings)}
+                />
+                <Stat label="Trim" value={fmtMoney(costs.paintCosts.trim)} />
+                <Stat
+                  label="Primer"
+                  value={fmtMoney(costs.paintCosts.primer)}
+                />
+              </Grid>
+            </CostSubsection>
+
+            <CostSubsection title="Material costs">
+              <Grid>
+                {costs.materialCosts.map((m) => (
+                  <Stat
+                    key={m.name}
+                    label={m.name}
+                    value={fmtMoney(m.cost)}
+                  />
+                ))}
+              </Grid>
+            </CostSubsection>
+
+            <CostSubsection title="Totals">
+              <Grid>
+                <Stat
+                  label="Paint Total"
+                  value={fmtMoney(costs.totals.paint)}
+                />
+                <Stat
+                  label="Materials Total"
+                  value={fmtMoney(costs.totals.materials)}
+                />
+                <Stat
+                  label="Grand Total"
+                  value={fmtMoney(costs.totals.grand)}
+                />
+              </Grid>
+            </CostSubsection>
+          </div>
+        </Card>
+      )}
     </section>
   );
+}
+
+function CostSubsection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+        {title}
+      </h4>
+      {children}
+    </div>
+  );
+}
+
+function fmtMoney(n: number): string {
+  return `$${Math.round(n).toLocaleString()}`;
 }
 
 /* ---------- AI suggest panel ---------- */

@@ -1,17 +1,18 @@
 // Types shared across server and client.
 
-// What the user controls. Required fields default to null so we can
+// What the user controls. Required fields are nullable so we can
 // validate "user has explicitly entered a value" vs "we silently filled
-// in a placeholder". Doors / windows have a sensible default since the
-// calculator can run without them being plan-derived.
+// in a placeholder". sqFt, wallHeight, doors, and windows are all
+// required — only the calc-tuning fields (wallMultiplier, coats, prime)
+// keep defaults.
 export type ProjectInputs = {
   sqFt: number | null;
   wallHeight: number | null;
   wallMultiplier: number;
   coats: number;
   prime: boolean;
-  doors: number;
-  windows: number;
+  doors: number | null;
+  windows: number | null;
 };
 
 // What the AI extracts from uploaded plans. These are *suggestions* —
