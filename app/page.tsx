@@ -22,6 +22,11 @@ export default function Page() {
   // Optional AI side panel.
   const [files, setFiles] = useState<File[]>([]);
   const [ai, setAi] = useState<AiState>({ status: "idle" });
+  // Tracks the most recently applied AI suggestion so we can briefly
+  // highlight the input field and show "Applied".
+  const [recentlyApplied, setRecentlyApplied] = useState<
+    keyof ProjectInputs | null
+  >(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const result = isValidInputs(inputs) ? calculateEstimate(inputs) : null;
@@ -30,6 +35,21 @@ export default function Page() {
     key: K,
     value: ProjectInputs[K],
   ) => setInputs((prev) => ({ ...prev, [key]: value }));
+
+  // Single connection between AI suggestions and Project Inputs.
+  // Always uses setInputs against the latest state. Never runs except
+  // when the user clicks "Apply".
+  const applySuggestion = (
+    field: "sqFt" | "wallHeight",
+    value: number | null,
+  ) => {
+    if (value === null) return;
+    setInputs((prev) => ({ ...prev, [field]: value }));
+    setRecentlyApplied(field);
+    window.setTimeout(() => {
+      setRecentlyApplied((curr) => (curr === field ? null : curr));
+    }, 1800);
+  };
 
   const onFiles = useCallback((picked: FileList | File[] | null) => {
     if (!picked) return;
@@ -54,14 +74,8 @@ export default function Page() {
       }
       const extracted = json.extracted as Extracted;
       setAi({ status: "ready", extracted });
-      // Suggest values into the form. User can override at any time.
-      // We only fill fields the AI returned — never overwrite a non-null value
-      // the user already typed.
-      setInputs((prev) => ({
-        ...prev,
-        sqFt: prev.sqFt ?? extracted.finished_sq_ft,
-        wallHeight: prev.wallHeight ?? extracted.ceiling_height_ft,
-      }));
+      // No auto-fill. Project Inputs only update when the user clicks
+      // "Apply" on a specific suggestion.
     } catch (e) {
       setAi({
         status: "error",
@@ -92,6 +106,7 @@ export default function Page() {
       <InputCard
         inputs={inputs}
         setField={setField}
+        recentlyApplied={recentlyApplied}
       />
 
       <ResultArea result={result} inputs={inputs} />
@@ -103,10 +118,8 @@ export default function Page() {
         onFiles={onFiles}
         analyze={analyze}
         clear={clearAi}
-        applySuggestion={(field, value) => {
-          if (field === "sqFt") setField("sqFt", value);
-          if (field === "wallHeight") setField("wallHeight", value);
-        }}
+        applySuggestion={applySuggestion}
+        recentlyApplied={recentlyApplied}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -122,12 +135,14 @@ export default function Page() {
 function InputCard({
   inputs,
   setField,
+  recentlyApplied,
 }: {
   inputs: ProjectInputs;
   setField: <K extends keyof ProjectInputs>(
     key: K,
     value: ProjectInputs[K],
   ) => void;
+  recentlyApplied: keyof ProjectInputs | null;
 }) {
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
@@ -144,6 +159,7 @@ function InputCard({
           placeholder="e.g. 2500"
           min={0}
           step={1}
+          flash={recentlyApplied === "sqFt"}
         />
 
         <div>
@@ -155,6 +171,7 @@ function InputCard({
             placeholder="required"
             min={0}
             step={0.5}
+            flash={recentlyApplied === "wallHeight"}
           />
           <div className="mt-2 flex gap-2">
             {[8, 9, 10].map((h) => {
@@ -217,6 +234,7 @@ function NumberField({
   required,
   min,
   step,
+  flash,
 }: {
   label: string;
   value: number | null;
@@ -225,6 +243,7 @@ function NumberField({
   required?: boolean;
   min?: number;
   step?: number;
+  flash?: boolean;
 }) {
   return (
     <label className="block">
@@ -247,7 +266,11 @@ function NumberField({
         placeholder={placeholder}
         min={min}
         step={step}
-        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+        className={`w-full rounded-md border bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500 ${
+          flash
+            ? "border-amber-500 ring-2 ring-amber-500/40"
+            : "border-zinc-700"
+        }`}
       />
     </label>
   );
@@ -328,6 +351,7 @@ function AiSuggestPanel({
   analyze,
   clear,
   applySuggestion,
+  recentlyApplied,
 }: {
   files: File[];
   ai: AiState;
@@ -339,6 +363,7 @@ function AiSuggestPanel({
     field: "sqFt" | "wallHeight",
     value: number | null,
   ) => void;
+  recentlyApplied: keyof ProjectInputs | null;
 }) {
   return (
     <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
@@ -410,6 +435,7 @@ function AiSuggestPanel({
         <Suggestions
           extracted={ai.extracted}
           applySuggestion={applySuggestion}
+          recentlyApplied={recentlyApplied}
         />
       )}
     </section>
@@ -419,12 +445,14 @@ function AiSuggestPanel({
 function Suggestions({
   extracted,
   applySuggestion,
+  recentlyApplied,
 }: {
   extracted: Extracted;
   applySuggestion: (
     field: "sqFt" | "wallHeight",
     value: number | null,
   ) => void;
+  recentlyApplied: keyof ProjectInputs | null;
 }) {
   const items: Array<{
     label: string;
@@ -486,9 +514,13 @@ function Suggestions({
                 <button
                   type="button"
                   onClick={() => applySuggestion(it.field!, it.value)}
-                  className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:border-amber-500 hover:text-amber-300"
+                  className={`rounded border px-2 py-0.5 text-xs transition ${
+                    recentlyApplied === it.field
+                      ? "border-emerald-500 text-emerald-300"
+                      : "border-zinc-700 text-zinc-300 hover:border-amber-500 hover:text-amber-300"
+                  }`}
                 >
-                  Apply
+                  {recentlyApplied === it.field ? "Applied ✓" : "Apply"}
                 </button>
               )}
               {it.note && (
