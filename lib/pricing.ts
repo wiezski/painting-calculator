@@ -14,8 +14,10 @@ export const STORES: ReadonlyArray<{ id: Store; label: string }> = [
 
 // Per-store pricing. $ per gallon for paint, $ per unit for materials.
 // V1 numbers are reasonable estimates of real retail pricing; tune
-// against actual receipts once a store API is wired in.
-type StorePricing = {
+// against actual receipts once a store API is wired in. These are
+// the *defaults* — the page seeds an editable copy in state so users
+// can override any cell.
+export type StorePricing = {
   paint: {
     walls: number;
     ceilings: number;
@@ -25,7 +27,9 @@ type StorePricing = {
   materials: Record<string, number>;
 };
 
-export const STORE_PRICING: Record<Store, StorePricing> = {
+export type StorePricingMap = Record<Store, StorePricing>;
+
+export const DEFAULT_STORE_PRICING: StorePricingMap = {
   // Premium pro-painter store — highest paint quality and price.
   "sherwin-williams": {
     paint: { walls: 55, ceilings: 42, trim: 70, primer: 35 },
@@ -130,31 +134,59 @@ export interface CostBreakdown {
   };
 }
 
+// Region detection by ZIP prefix. Simple lookup — no API. Add more
+// rows here as needed.
+const LOCATION_TABLE: Record<
+  string,
+  { region: string; multiplier: number }
+> = {
+  "84": { region: "Utah", multiplier: 1.0 },
+  "90": { region: "California", multiplier: 1.15 },
+  "91": { region: "California", multiplier: 1.15 },
+  "75": { region: "Texas", multiplier: 0.95 },
+};
+
+export function getLocationInfo(zip: string): {
+  region: string | null;
+  multiplier: number;
+} {
+  const trimmed = (zip ?? "").trim();
+  if (trimmed.length < 2) return { region: null, multiplier: 1.0 };
+  const prefix = trimmed.slice(0, 2);
+  const hit = LOCATION_TABLE[prefix];
+  if (!hit) return { region: null, multiplier: 1.0 };
+  return hit;
+}
+
 // Pricing depends on the estimate (gallons + materials list), the
-// inputs (production rates, hourly rate, painters, markup), and the
-// chosen store (drives paint and material unit prices).
+// inputs (production rates, hourly rate, painters, markup, zip), the
+// chosen store, the editable pricing table, and a location multiplier
+// derived from the ZIP code.
 export function computeCosts(
   estimate: Estimate,
   inputs: ProjectInputs,
   store: Store,
+  pricing: StorePricingMap,
+  locationMultiplier: number = 1.0,
 ): CostBreakdown {
-  const prices = STORE_PRICING[store];
+  const prices = pricing[store];
+  const m = locationMultiplier;
 
   const paintCosts = {
-    walls: estimate.wallGallons * prices.paint.walls,
-    ceilings: estimate.ceilingGallons * prices.paint.ceilings,
-    trim: estimate.trimGallons * prices.paint.trim,
-    primer: estimate.primerGallons * prices.paint.primer,
+    walls: estimate.wallGallons * prices.paint.walls * m,
+    ceilings: estimate.ceilingGallons * prices.paint.ceilings * m,
+    trim: estimate.trimGallons * prices.paint.trim * m,
+    primer: estimate.primerGallons * prices.paint.primer * m,
   };
 
   const materialCosts: MaterialCost[] = estimate.materials.map(
-    (m: MaterialItem) => {
-      const unitPrice = prices.materials[m.name] ?? 0;
+    (mi: MaterialItem) => {
+      const unitPrice = (prices.materials[mi.name] ?? 0) * m;
       return {
-        name: m.name,
-        qty: m.qty,
+        name: mi.name,
+        qty: mi.qty,
         unitPrice,
-        cost: m.qty * unitPrice,
+        cost: mi.qty * unitPrice,
       };
     },
   );

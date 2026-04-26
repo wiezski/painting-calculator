@@ -6,7 +6,14 @@ import {
   calculateEstimate,
   isValidInputs,
 } from "@/lib/calculator";
-import { STORES, computeCosts, type Store } from "@/lib/pricing";
+import {
+  DEFAULT_STORE_PRICING,
+  STORES,
+  computeCosts,
+  getLocationInfo,
+  type Store,
+  type StorePricingMap,
+} from "@/lib/pricing";
 import type { Extracted, ProjectInputs } from "@/lib/types";
 
 // Upload / analyze lifecycle. The extracted data is held separately
@@ -45,6 +52,13 @@ export default function Page() {
   // Compare-stores mode swaps the per-line view for a 3-column
   // store-vs-store totals view inside the Costs card.
   const [compareStores, setCompareStores] = useState(false);
+  // Editable pricing per store. Seeded from defaults; user can
+  // override any cell in the Pricing Settings panel.
+  const [pricing, setPricing] = useState<StorePricingMap>(
+    () => structuredClone(DEFAULT_STORE_PRICING),
+  );
+  const [showPricingSettings, setShowPricingSettings] = useState(false);
+  const [pricingTab, setPricingTab] = useState<Store>("sherwin-williams");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Reactive result, gated on confirm + valid inputs (sqFt, wallHeight,
@@ -56,12 +70,18 @@ export default function Page() {
     return calculateEstimate(inputs);
   }, [inputs, confirmed]);
 
-  // Costs derived from the estimate + inputs (labor/markup) + selected
-  // store. Inputs are passed because labor cost and markup live there.
+  // Region-based cost adjuster derived from the ZIP code.
+  const locationInfo = useMemo(
+    () => getLocationInfo(inputs.zipCode),
+    [inputs.zipCode],
+  );
+
+  // Costs derived from the estimate + inputs + selected store +
+  // editable pricing + ZIP-based location multiplier.
   const costs = useMemo(() => {
     if (!result) return null;
-    return computeCosts(result, inputs, store);
-  }, [result, inputs, store]);
+    return computeCosts(result, inputs, store, pricing, locationInfo.multiplier);
+  }, [result, inputs, store, pricing, locationInfo.multiplier]);
 
   // Per-store costs for the comparison view. Computed regardless of
   // the toggle so flipping into compare mode is instant.
@@ -69,9 +89,9 @@ export default function Page() {
     if (!result) return null;
     return STORES.map((s) => ({
       store: s,
-      costs: computeCosts(result, inputs, s.id),
+      costs: computeCosts(result, inputs, s.id, pricing, locationInfo.multiplier),
     }));
-  }, [result, inputs]);
+  }, [result, inputs, pricing, locationInfo.multiplier]);
 
   const setField = <K extends keyof ProjectInputs>(
     key: K,
@@ -183,6 +203,15 @@ export default function Page() {
         onStoreChange={setStore}
         compareStores={compareStores}
         onToggleCompare={() => setCompareStores((v) => !v)}
+        pricing={pricing}
+        setPricing={setPricing}
+        showPricingSettings={showPricingSettings}
+        onTogglePricingSettings={() =>
+          setShowPricingSettings((v) => !v)
+        }
+        pricingTab={pricingTab}
+        onPricingTabChange={setPricingTab}
+        locationInfo={locationInfo}
         confirmed={confirmed}
         canConfirm={isValidInputs(inputs)}
         onConfirm={() => setConfirmed(true)}
@@ -371,6 +400,23 @@ function InputCard({
           step={0.5}
         />
 
+        <label className="block">
+          <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+            Zip Code
+          </span>
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={10}
+            value={inputs.zipCode}
+            onChange={(e) =>
+              setField("zipCode", e.target.value.replace(/[^\d-]/g, ""))
+            }
+            placeholder="84101"
+            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+          />
+        </label>
+
         <label className="col-span-1 flex select-none items-center gap-2 sm:col-span-2">
           <input
             type="checkbox"
@@ -447,6 +493,13 @@ function ResultArea({
   onStoreChange,
   compareStores,
   onToggleCompare,
+  pricing,
+  setPricing,
+  showPricingSettings,
+  onTogglePricingSettings,
+  pricingTab,
+  onPricingTabChange,
+  locationInfo,
   confirmed,
   canConfirm,
   onConfirm,
@@ -464,6 +517,13 @@ function ResultArea({
   onStoreChange: (s: Store) => void;
   compareStores: boolean;
   onToggleCompare: () => void;
+  pricing: StorePricingMap;
+  setPricing: React.Dispatch<React.SetStateAction<StorePricingMap>>;
+  showPricingSettings: boolean;
+  onTogglePricingSettings: () => void;
+  pricingTab: Store;
+  onPricingTabChange: (s: Store) => void;
+  locationInfo: { region: string | null; multiplier: number };
   confirmed: boolean;
   canConfirm: boolean;
   onConfirm: () => void;
@@ -553,6 +613,16 @@ function ResultArea({
           ))}
         </Grid>
       </Card>
+
+      <PricingSettingsCard
+        pricing={pricing}
+        setPricing={setPricing}
+        expanded={showPricingSettings}
+        onToggle={onTogglePricingSettings}
+        activeTab={pricingTab}
+        onTabChange={onPricingTabChange}
+        locationInfo={locationInfo}
+      />
 
       {costs && (
         <Card title="Costs">
@@ -709,6 +779,206 @@ function ResultArea({
         </Card>
       )}
     </section>
+  );
+}
+
+// Collapsible per-store pricing editor with a tabbed view (one tab per
+// store). Shows a small location indicator above the tabs when a ZIP
+// is matched.
+function PricingSettingsCard({
+  pricing,
+  setPricing,
+  expanded,
+  onToggle,
+  activeTab,
+  onTabChange,
+  locationInfo,
+}: {
+  pricing: StorePricingMap;
+  setPricing: React.Dispatch<React.SetStateAction<StorePricingMap>>;
+  expanded: boolean;
+  onToggle: () => void;
+  activeTab: Store;
+  onTabChange: (s: Store) => void;
+  locationInfo: { region: string | null; multiplier: number };
+}) {
+  const setPaintPrice = (
+    s: Store,
+    key: keyof StorePricingMap[Store]["paint"],
+    value: number,
+  ) => {
+    setPricing((prev) => ({
+      ...prev,
+      [s]: { ...prev[s], paint: { ...prev[s].paint, [key]: value } },
+    }));
+  };
+
+  const setMaterialPrice = (s: Store, name: string, value: number) => {
+    setPricing((prev) => ({
+      ...prev,
+      [s]: {
+        ...prev[s],
+        materials: { ...prev[s].materials, [name]: value },
+      },
+    }));
+  };
+
+  const active = pricing[activeTab];
+  const materialNames = Object.keys(active.materials);
+
+  return (
+    <section className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <header className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
+            Pricing Settings
+          </h2>
+          {locationInfo.region ? (
+            <p className="mt-1 text-xs text-emerald-300">
+              Region detected: {locationInfo.region} ·{" "}
+              {locationInfo.multiplier === 1
+                ? "neutral"
+                : `${locationInfo.multiplier > 1 ? "+" : ""}${(
+                    (locationInfo.multiplier - 1) *
+                    100
+                  ).toFixed(0)}%`}{" "}
+              multiplier
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-zinc-500">
+              Set a ZIP code in inputs to apply a regional multiplier.
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onToggle}
+          className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+        >
+          {expanded ? "Hide pricing settings" : "Show pricing settings"}
+        </button>
+      </header>
+
+      {expanded && (
+        <div className="mt-5">
+          {/* Store tabs */}
+          <div className="flex border-b border-zinc-800">
+            {STORES.map((s) => {
+              const isActive = s.id === activeTab;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => onTabChange(s.id)}
+                  className={`-mb-px border-b-2 px-3 py-2 text-xs font-medium transition ${
+                    isActive
+                      ? "border-amber-500 text-amber-300"
+                      : "border-transparent text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Paint */}
+          <div className="mt-5">
+            <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+              Paint ($ / gallon)
+            </h4>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {(
+                [
+                  ["walls", "Walls"],
+                  ["ceilings", "Ceilings"],
+                  ["trim", "Trim"],
+                  ["primer", "Primer"],
+                ] as const
+              ).map(([key, label]) => (
+                <SmallNumberField
+                  key={key}
+                  label={label}
+                  value={active.paint[key]}
+                  onChange={(v) =>
+                    setPaintPrice(activeTab, key, Math.max(0, v ?? 0))
+                  }
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Materials — scrollable on small screens */}
+          <div className="mt-5">
+            <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+              Materials ($ / unit)
+            </h4>
+            <div className="grid max-h-72 grid-cols-1 gap-2 overflow-auto pr-1 sm:grid-cols-2">
+              {materialNames.map((name) => (
+                <div
+                  key={name}
+                  className="flex items-center justify-between gap-2 rounded-md bg-zinc-950/40 px-2 py-1.5"
+                >
+                  <span className="truncate text-xs text-zinc-300">
+                    {name}
+                  </span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    value={active.materials[name] ?? 0}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      const n =
+                        raw === "" ? 0 : Number.isFinite(Number(raw))
+                          ? Math.max(0, Number(raw))
+                          : 0;
+                      setMaterialPrice(activeTab, name, n);
+                    }}
+                    min={0}
+                    step={0.5}
+                    className="w-20 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-xs text-zinc-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SmallNumberField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number | null) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] uppercase tracking-wide text-zinc-500">
+        {label}
+      </span>
+      <input
+        type="number"
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") onChange(null);
+          else {
+            const n = Number(raw);
+            onChange(Number.isFinite(n) ? n : null);
+          }
+        }}
+        min={0}
+        step={1}
+        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 focus:border-amber-500 focus:outline-none"
+      />
+    </label>
   );
 }
 

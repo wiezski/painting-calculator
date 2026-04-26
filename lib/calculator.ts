@@ -69,6 +69,7 @@ export const DEFAULT_INPUTS: ProjectInputs = {
   ceilingRate: 200,
   trimRate: 80,
   doorRate: 2,
+  zipCode: "",
 };
 
 export function isValidInputs(inputs: ProjectInputs): boolean {

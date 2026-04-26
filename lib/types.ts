@@ -23,6 +23,8 @@ export type ProjectInputs = {
   ceilingRate: number;
   trimRate: number;
   doorRate: number;
+  // Optional ZIP for regional pricing adjustment.
+  zipCode: string;
 };
 
 // What the AI extracts from uploaded plans. These are *suggestions* —
