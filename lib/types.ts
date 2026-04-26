@@ -24,6 +24,15 @@ export interface Extracted {
   notes: string;
 }
 
+// One row in the materials takeoff list.
+export interface MaterialItem {
+  name: string;
+  qty: number;
+  // Optional sq-ft / unit rate for transparency. Caulk and other
+  // rule-based items can leave this undefined.
+  rate?: number;
+}
+
 // Calculator output.
 export interface Estimate {
   wallArea: number;
@@ -31,10 +40,5 @@ export interface Estimate {
   wallGallons: number;
   ceilingGallons: number;
   primerGallons: number;
-  materials: {
-    tape: number;
-    plastic: number;
-    paper: number;
-    sandingPads: number;
-  };
+  materials: MaterialItem[];
 }

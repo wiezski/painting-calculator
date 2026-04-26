@@ -404,10 +404,9 @@ function ResultArea({
 
       <Card title="Materials">
         <Grid>
-          <Stat label="Tape" value={result.materials.tape} />
-          <Stat label="Plastic" value={result.materials.plastic} />
-          <Stat label="Paper" value={result.materials.paper} />
-          <Stat label="Sanding pads" value={result.materials.sandingPads} />
+          {result.materials.map((m) => (
+            <Stat key={m.name} label={m.name} value={m.qty} />
+          ))}
         </Grid>
       </Card>
     </section>

@@ -2,7 +2,56 @@
 // AI never touches these numbers — it only fills in suggested inputs
 // for the user to accept or override.
 
-import type { Estimate, ProjectInputs } from "./types";
+import type { Estimate, MaterialItem, ProjectInputs } from "./types";
+
+// Materials configuration: each entry is { name, ratePerSqFt } where
+// the per-unit count is ceil(sqFt / rate). A few items follow a
+// different rule and are computed inline in computeMaterials().
+//
+// Rates are V1 estimates from common residential takeoffs. They live
+// here so a contractor can adjust without touching the math.
+const MATERIAL_CONFIG: ReadonlyArray<{ name: string; rate: number }> = [
+  { name: 'Blue Tape 1"', rate: 200 },
+  { name: 'Blue Tape 1.5"', rate: 175 },
+  { name: "Yellow Tape", rate: 200 },
+  { name: "White Tape", rate: 250 },
+  { name: 'Paper 9"', rate: 200 },
+  { name: "Masking Plastic (6x99)", rate: 500 },
+  { name: "Ram Board", rate: 150 },
+  // Caulk handled separately (per opening, not per sq ft).
+  { name: "Wood Putty", rate: 1000 },
+  { name: "Bondo", rate: 2000 },
+  { name: '18" Sleeves', rate: 300 },
+  { name: '9" Sleeves', rate: 250 },
+  { name: '4" Sleeves', rate: 400 },
+  { name: "Sanding Pads", rate: 150 },
+];
+
+// Compute the full materials list for a given finished sq ft and
+// optional opening counts (doors + windows).
+//
+// V1: when openings are unknown we use 10 as a reasonable default so
+// caulk shows up on the list. Doors/windows aren't yet inputs, but
+// the AI extraction returns them and they can be wired in later.
+export function computeMaterials(
+  sqFt: number,
+  openings = 10,
+): MaterialItem[] {
+  const list: MaterialItem[] = MATERIAL_CONFIG.map((m) => ({
+    name: m.name,
+    qty: Math.ceil(sqFt / m.rate),
+    rate: m.rate,
+  }));
+
+  // Insert Caulk after Ram Board (matches the spec ordering).
+  const ramBoardIndex = list.findIndex((m) => m.name === "Ram Board");
+  list.splice(ramBoardIndex + 1, 0, {
+    name: "Caulk",
+    qty: openings,
+  });
+
+  return list;
+}
 
 export const DEFAULT_INPUTS: ProjectInputs = {
   sqFt: null,
@@ -47,10 +96,8 @@ export function calculateEstimate(inputs: ProjectInputs): Estimate | null {
     ? Math.ceil((wallArea / wallCoverage) * waste)
     : 0;
 
-  const tape = Math.ceil(inputs.sqFt / 175);
-  const plastic = Math.ceil(inputs.sqFt / 500);
-  const paper = Math.ceil(inputs.sqFt / 400);
-  const sandingPads = Math.ceil(inputs.sqFt / 150);
+  // Full materials takeoff list (see MATERIAL_CONFIG above).
+  const materials = computeMaterials(inputs.sqFt);
 
   return {
     wallArea,
@@ -58,6 +105,6 @@ export function calculateEstimate(inputs: ProjectInputs): Estimate | null {
     wallGallons,
     ceilingGallons,
     primerGallons,
-    materials: { tape, plastic, paper, sandingPads },
+    materials,
   };
 }
