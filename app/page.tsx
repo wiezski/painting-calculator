@@ -59,6 +59,13 @@ export default function Page() {
   );
   const [showPricingSettings, setShowPricingSettings] = useState(false);
   const [pricingTab, setPricingTab] = useState<Store>("sherwin-williams");
+  // UX: Quick / Detailed mode toggle. Quick hides extra detail
+  // sections to keep the screen lean for fast bidding.
+  const [mode, setMode] = useState<"quick" | "detailed">("quick");
+  // Collapsible sections — default collapsed in detailed mode.
+  const [showMaterials, setShowMaterials] = useState(false);
+  const [showLabor, setShowLabor] = useState(false);
+  const [showCosts, setShowCosts] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Reactive result, gated on confirm + valid inputs (sqFt, wallHeight,
@@ -166,6 +173,34 @@ export default function Page() {
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
+      {/* Sticky bar: always-visible price + Quick/Detailed toggle. */}
+      <div className="sticky top-0 z-20 -mx-6 mb-6 flex items-center justify-between gap-4 border-b border-zinc-800 bg-zinc-950/85 px-6 py-3 backdrop-blur">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">
+            Estimated Price
+          </div>
+          <div className="text-2xl font-semibold text-amber-400">
+            {costs ? fmtMoney(costs.jobPricing.finalPrice) : "—"}
+          </div>
+        </div>
+        <div className="inline-flex rounded-md border border-zinc-700 p-0.5 text-xs">
+          {(["quick", "detailed"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              className={`rounded-[0.3rem] px-3 py-1.5 font-medium transition ${
+                mode === m
+                  ? "bg-amber-500 text-black"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {m === "quick" ? "Quick Estimate" : "Detailed Mode"}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight">
           Painting Calculator
@@ -190,7 +225,7 @@ export default function Page() {
 
       {/* Step 2 — Project inputs (auto-filled by AI or typed manually) */}
       <div className="mt-6">
-        <InputCard inputs={inputs} setField={setField} />
+        <InputCard inputs={inputs} setField={setField} mode={mode} />
       </div>
 
       {/* Step 3 — Confirm + result */}
@@ -215,6 +250,13 @@ export default function Page() {
         confirmed={confirmed}
         canConfirm={isValidInputs(inputs)}
         onConfirm={() => setConfirmed(true)}
+        mode={mode}
+        showMaterials={showMaterials}
+        onToggleMaterials={() => setShowMaterials((v) => !v)}
+        showLabor={showLabor}
+        onToggleLabor={() => setShowLabor((v) => !v)}
+        showCosts={showCosts}
+        onToggleCosts={() => setShowCosts((v) => !v)}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -230,13 +272,16 @@ export default function Page() {
 function InputCard({
   inputs,
   setField,
+  mode,
 }: {
   inputs: ProjectInputs;
   setField: <K extends keyof ProjectInputs>(
     key: K,
     value: ProjectInputs[K],
   ) => void;
+  mode: "quick" | "detailed";
 }) {
+  const showAdvanced = mode === "detailed";
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
       <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-400">
@@ -285,26 +330,30 @@ function InputCard({
           </div>
         </div>
 
-        <NumberField
-          label="Wall Multiplier"
-          // Falls back to 2.6 if cleared so the field always holds a
-          // number (matches ProjectInputs.wallMultiplier: number).
-          value={inputs.wallMultiplier}
-          onChange={(v) => setField("wallMultiplier", v ?? 2.6)}
-          placeholder="2.6"
-          min={0}
-          step={0.1}
-        />
+        {showAdvanced && (
+          <NumberField
+            label="Wall Multiplier"
+            // Falls back to 2.6 if cleared so the field always holds a
+            // number (matches ProjectInputs.wallMultiplier: number).
+            value={inputs.wallMultiplier}
+            onChange={(v) => setField("wallMultiplier", v ?? 2.6)}
+            placeholder="2.6"
+            min={0}
+            step={0.1}
+          />
+        )}
 
-        <NumberField
-          label="Coats"
-          // Coats is always a positive integer.
-          value={inputs.coats}
-          onChange={(v) => setField("coats", Math.max(1, Math.round(v ?? 2)))}
-          placeholder="2"
-          min={1}
-          step={1}
-        />
+        {showAdvanced && (
+          <NumberField
+            label="Coats"
+            // Coats is always a positive integer.
+            value={inputs.coats}
+            onChange={(v) => setField("coats", Math.max(1, Math.round(v ?? 2)))}
+            placeholder="2"
+            min={1}
+            step={1}
+          />
+        )}
 
         <NumberField
           label="Doors"
@@ -332,100 +381,101 @@ function InputCard({
           step={1}
         />
 
-        <NumberField
-          label="Hourly Rate ($)"
-          // Default 35. Drives labor cost.
-          value={inputs.hourlyRate}
-          onChange={(v) => setField("hourlyRate", Math.max(0, v ?? 35))}
-          placeholder="35"
-          min={0}
-          step={1}
-        />
+        {showAdvanced && (
+          <>
+            <NumberField
+              label="Hourly Rate ($)"
+              value={inputs.hourlyRate}
+              onChange={(v) => setField("hourlyRate", Math.max(0, v ?? 35))}
+              placeholder="35"
+              min={0}
+              step={1}
+            />
 
-        <NumberField
-          label="Number of Painters"
-          // Default 1. Multiplies labor cost.
-          value={inputs.numberOfPainters}
-          onChange={(v) =>
-            setField("numberOfPainters", Math.max(1, Math.round(v ?? 1)))
-          }
-          placeholder="1"
-          min={1}
-          step={1}
-        />
+            <NumberField
+              label="Number of Painters"
+              value={inputs.numberOfPainters}
+              onChange={(v) =>
+                setField("numberOfPainters", Math.max(1, Math.round(v ?? 1)))
+              }
+              placeholder="1"
+              min={1}
+              step={1}
+            />
 
-        <NumberField
-          label="Markup %"
-          // Default 30. Applied to materials + labor subtotal.
-          value={inputs.markup}
-          onChange={(v) => setField("markup", Math.max(0, v ?? 30))}
-          placeholder="30"
-          min={0}
-          step={1}
-        />
+            <NumberField
+              label="Markup %"
+              value={inputs.markup}
+              onChange={(v) => setField("markup", Math.max(0, v ?? 30))}
+              placeholder="30"
+              min={0}
+              step={1}
+            />
 
-        <NumberField
-          label="Wall Rate (sq ft/hr)"
-          value={inputs.wallRate}
-          onChange={(v) => setField("wallRate", Math.max(1, v ?? 150))}
-          placeholder="150"
-          min={1}
-          step={5}
-        />
+            <NumberField
+              label="Wall Rate (sq ft/hr)"
+              value={inputs.wallRate}
+              onChange={(v) => setField("wallRate", Math.max(1, v ?? 150))}
+              placeholder="150"
+              min={1}
+              step={5}
+            />
 
-        <NumberField
-          label="Ceiling Rate (sq ft/hr)"
-          value={inputs.ceilingRate}
-          onChange={(v) => setField("ceilingRate", Math.max(1, v ?? 200))}
-          placeholder="200"
-          min={1}
-          step={5}
-        />
+            <NumberField
+              label="Ceiling Rate (sq ft/hr)"
+              value={inputs.ceilingRate}
+              onChange={(v) => setField("ceilingRate", Math.max(1, v ?? 200))}
+              placeholder="200"
+              min={1}
+              step={5}
+            />
 
-        <NumberField
-          label="Trim Rate (sq ft/hr)"
-          value={inputs.trimRate}
-          onChange={(v) => setField("trimRate", Math.max(1, v ?? 80))}
-          placeholder="80"
-          min={1}
-          step={5}
-        />
+            <NumberField
+              label="Trim Rate (sq ft/hr)"
+              value={inputs.trimRate}
+              onChange={(v) => setField("trimRate", Math.max(1, v ?? 80))}
+              placeholder="80"
+              min={1}
+              step={5}
+            />
 
-        <NumberField
-          label="Door Rate (doors/hr)"
-          value={inputs.doorRate}
-          onChange={(v) => setField("doorRate", Math.max(0.1, v ?? 2))}
-          placeholder="2"
-          min={0.1}
-          step={0.5}
-        />
+            <NumberField
+              label="Door Rate (doors/hr)"
+              value={inputs.doorRate}
+              onChange={(v) => setField("doorRate", Math.max(0.1, v ?? 2))}
+              placeholder="2"
+              min={0.1}
+              step={0.5}
+            />
 
-        <label className="block">
-          <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
-            Zip Code
-          </span>
-          <input
-            type="text"
-            inputMode="numeric"
-            maxLength={10}
-            value={inputs.zipCode}
-            onChange={(e) =>
-              setField("zipCode", e.target.value.replace(/[^\d-]/g, ""))
-            }
-            placeholder="84101"
-            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
-          />
-        </label>
+            <label className="block">
+              <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+                Zip Code
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={10}
+                value={inputs.zipCode}
+                onChange={(e) =>
+                  setField("zipCode", e.target.value.replace(/[^\d-]/g, ""))
+                }
+                placeholder="84101"
+                className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+              />
+            </label>
 
-        <label className="col-span-1 flex select-none items-center gap-2 sm:col-span-2">
-          <input
-            type="checkbox"
-            checked={inputs.prime}
-            onChange={(e) => setField("prime", e.target.checked)}
-            className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 accent-amber-500"
-          />
-          <span className="text-sm text-zinc-200">Prime (one coat)</span>
-        </label>
+            <label className="col-span-1 flex select-none items-center gap-2 sm:col-span-2">
+              <input
+                type="checkbox"
+                checked={inputs.prime}
+                onChange={(e) => setField("prime", e.target.checked)}
+                className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 accent-amber-500"
+              />
+              <span className="text-sm text-zinc-200">Prime (one coat)</span>
+            </label>
+          </>
+        )}
       </div>
     </section>
   );
@@ -503,6 +553,13 @@ function ResultArea({
   confirmed,
   canConfirm,
   onConfirm,
+  mode,
+  showMaterials,
+  onToggleMaterials,
+  showLabor,
+  onToggleLabor,
+  showCosts,
+  onToggleCosts,
 }: {
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
@@ -527,7 +584,15 @@ function ResultArea({
   confirmed: boolean;
   canConfirm: boolean;
   onConfirm: () => void;
+  mode: "quick" | "detailed";
+  showMaterials: boolean;
+  onToggleMaterials: () => void;
+  showLabor: boolean;
+  onToggleLabor: () => void;
+  showCosts: boolean;
+  onToggleCosts: () => void;
 }) {
+  const isDetailed = mode === "detailed";
   // Step 3a — not confirmed yet: show the gate.
   if (!confirmed) {
     return (
@@ -606,27 +671,38 @@ function ResultArea({
         </Grid>
       </Card>
 
-      <Card title="Materials">
-        <Grid>
-          {result.materials.map((m) => (
-            <Stat key={m.name} label={m.name} value={m.qty} />
-          ))}
-        </Grid>
-      </Card>
+      {isDetailed && (
+        <CollapsibleCard
+          title="Materials"
+          expanded={showMaterials}
+          onToggle={onToggleMaterials}
+        >
+          <Grid>
+            {result.materials.map((m) => (
+              <Stat key={m.name} label={m.name} value={m.qty} />
+            ))}
+          </Grid>
+        </CollapsibleCard>
+      )}
 
-      <PricingSettingsCard
-        pricing={pricing}
-        setPricing={setPricing}
-        expanded={showPricingSettings}
-        onToggle={onTogglePricingSettings}
-        activeTab={pricingTab}
-        onTabChange={onPricingTabChange}
-        locationInfo={locationInfo}
-      />
+      {isDetailed && (
+        <PricingSettingsCard
+          pricing={pricing}
+          setPricing={setPricing}
+          expanded={showPricingSettings}
+          onToggle={onTogglePricingSettings}
+          activeTab={pricingTab}
+          onTabChange={onPricingTabChange}
+          locationInfo={locationInfo}
+        />
+      )}
 
-      {costs && (
-        <Card title="Costs">
-          {/* Top bar: store selector + compare toggle */}
+      {costs && isDetailed && (
+        <CollapsibleCard
+          title="Store Pricing & Comparison"
+          expanded={showCosts}
+          onToggle={onToggleCosts}
+        >
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <span className="text-xs uppercase tracking-wide text-zinc-500">
@@ -719,11 +795,15 @@ function ResultArea({
               </CostSubsection>
             </div>
           )}
-        </Card>
+        </CollapsibleCard>
       )}
 
-      {costs && !compareStores && (
-        <Card title="Labor Breakdown">
+      {costs && !compareStores && isDetailed && (
+        <CollapsibleCard
+          title="Labor Breakdown"
+          expanded={showLabor}
+          onToggle={onToggleLabor}
+        >
           <Grid>
             <Stat label="Walls (hrs)" value={costs.labor.wallHours.toFixed(1)} />
             <Stat
@@ -741,7 +821,7 @@ function ResultArea({
               value={fmtMoney(costs.labor.laborCost)}
             />
           </Grid>
-        </Card>
+        </CollapsibleCard>
       )}
 
       {costs && !compareStores && (
@@ -1381,6 +1461,37 @@ function Card({
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+// Same shell as Card, but the title bar is a click-toggle and the
+// body only renders when `expanded` is true. Used for sections that
+// add detail but bury it by default to keep the page lean.
+function CollapsibleCard({
+  title,
+  expanded,
+  onToggle,
+  children,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between text-sm font-medium uppercase tracking-wide text-zinc-400 hover:text-zinc-200"
+      >
+        <span>{title}</span>
+        <span className="text-base text-zinc-500" aria-hidden>
+          {expanded ? "−" : "+"}
+        </span>
+      </button>
+      {expanded && <div className="mt-4">{children}</div>}
     </div>
   );
 }
