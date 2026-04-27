@@ -12,85 +12,150 @@ export const STORES: ReadonlyArray<{ id: Store; label: string }> = [
   { id: "lowes", label: "Lowe's" },
 ];
 
+// Each price cell is a small object so we can attach a product URL
+// and a last-fetched timestamp. The calculator always reads `.price`,
+// the URL/timestamp are metadata for the Pricing Settings UI.
+export interface PriceEntry {
+  price: number;
+  url: string;
+  lastUpdated: number | null;
+}
+
+// Helper for seeding defaults / building entries during migration.
+export function makePriceEntry(
+  price: number,
+  url: string = "",
+  lastUpdated: number | null = null,
+): PriceEntry {
+  return { price, url, lastUpdated };
+}
+
 // Per-store pricing. $ per gallon for paint, $ per unit for materials.
-// V1 numbers are reasonable estimates of real retail pricing; tune
-// against actual receipts once a store API is wired in. These are
-// the *defaults* — the page seeds an editable copy in state so users
-// can override any cell.
+// V1 numbers are reasonable estimates of real retail pricing; the
+// Pricing Settings UI lets users override any cell or fetch a real
+// price from a product URL.
 export type StorePricing = {
   paint: {
-    walls: number;
-    ceilings: number;
-    trim: number;
-    primer: number;
+    walls: PriceEntry;
+    ceilings: PriceEntry;
+    trim: PriceEntry;
+    primer: PriceEntry;
   };
-  materials: Record<string, number>;
+  materials: Record<string, PriceEntry>;
 };
 
 export type StorePricingMap = Record<Store, StorePricing>;
 
+// Quick alias so the literal default block below stays readable.
+const e = (n: number): PriceEntry => makePriceEntry(n);
+
 export const DEFAULT_STORE_PRICING: StorePricingMap = {
   // Premium pro-painter store — highest paint quality and price.
   "sherwin-williams": {
-    paint: { walls: 55, ceilings: 42, trim: 70, primer: 35 },
+    paint: { walls: e(55), ceilings: e(42), trim: e(70), primer: e(35) },
     materials: {
-      'Blue Tape 1"': 7,
-      'Blue Tape 1.5"': 8,
-      "Yellow Tape": 6,
-      "White Tape": 6,
-      'Paper 9"': 14,
-      "Masking Plastic (6x99)": 28,
-      "Ram Board": 48,
-      Caulk: 5,
-      "Wood Putty": 9,
-      Bondo: 14,
-      '18" Sleeves': 12,
-      '9" Sleeves': 7,
-      '4" Sleeves': 6,
-      "Sanding Pads": 3,
+      'Blue Tape 1"': e(7),
+      'Blue Tape 1.5"': e(8),
+      "Yellow Tape": e(6),
+      "White Tape": e(6),
+      'Paper 9"': e(14),
+      "Masking Plastic (6x99)": e(28),
+      "Ram Board": e(48),
+      Caulk: e(5),
+      "Wood Putty": e(9),
+      Bondo: e(14),
+      '18" Sleeves': e(12),
+      '9" Sleeves': e(7),
+      '4" Sleeves': e(6),
+      "Sanding Pads": e(3),
     },
   },
   // Big-box retail — generally lowest paint price, decent materials.
   "home-depot": {
-    paint: { walls: 38, ceilings: 30, trim: 52, primer: 26 },
+    paint: { walls: e(38), ceilings: e(30), trim: e(52), primer: e(26) },
     materials: {
-      'Blue Tape 1"': 5,
-      'Blue Tape 1.5"': 6,
-      "Yellow Tape": 4,
-      "White Tape": 4,
-      'Paper 9"': 10,
-      "Masking Plastic (6x99)": 22,
-      "Ram Board": 42,
-      Caulk: 3,
-      "Wood Putty": 7,
-      Bondo: 11,
-      '18" Sleeves': 9,
-      '9" Sleeves': 5,
-      '4" Sleeves': 4,
-      "Sanding Pads": 2,
+      'Blue Tape 1"': e(5),
+      'Blue Tape 1.5"': e(6),
+      "Yellow Tape": e(4),
+      "White Tape": e(4),
+      'Paper 9"': e(10),
+      "Masking Plastic (6x99)": e(22),
+      "Ram Board": e(42),
+      Caulk: e(3),
+      "Wood Putty": e(7),
+      Bondo: e(11),
+      '18" Sleeves': e(9),
+      '9" Sleeves': e(5),
+      '4" Sleeves': e(4),
+      "Sanding Pads": e(2),
     },
   },
   // Big-box retail — sits in the middle.
   lowes: {
-    paint: { walls: 42, ceilings: 33, trim: 56, primer: 28 },
+    paint: { walls: e(42), ceilings: e(33), trim: e(56), primer: e(28) },
     materials: {
-      'Blue Tape 1"': 6,
-      'Blue Tape 1.5"': 7,
-      "Yellow Tape": 5,
-      "White Tape": 5,
-      'Paper 9"': 11,
-      "Masking Plastic (6x99)": 24,
-      "Ram Board": 44,
-      Caulk: 4,
-      "Wood Putty": 8,
-      Bondo: 12,
-      '18" Sleeves': 10,
-      '9" Sleeves': 6,
-      '4" Sleeves': 5,
-      "Sanding Pads": 2,
+      'Blue Tape 1"': e(6),
+      'Blue Tape 1.5"': e(7),
+      "Yellow Tape": e(5),
+      "White Tape": e(5),
+      'Paper 9"': e(11),
+      "Masking Plastic (6x99)": e(24),
+      "Ram Board": e(44),
+      Caulk: e(4),
+      "Wood Putty": e(8),
+      Bondo: e(12),
+      '18" Sleeves': e(10),
+      '9" Sleeves': e(6),
+      '4" Sleeves': e(5),
+      "Sanding Pads": e(2),
     },
   },
 };
+
+// Migrate legacy pricing values (raw numbers) to PriceEntry shape.
+// Idempotent — already-migrated PriceEntry objects pass through.
+export function toPriceEntry(value: unknown): PriceEntry {
+  if (typeof value === "number") return makePriceEntry(value);
+  if (value && typeof value === "object") {
+    const v = value as Partial<PriceEntry>;
+    return {
+      price: typeof v.price === "number" ? v.price : 0,
+      url: typeof v.url === "string" ? v.url : "",
+      lastUpdated:
+        typeof v.lastUpdated === "number" ? v.lastUpdated : null,
+    };
+  }
+  return makePriceEntry(0);
+}
+
+export function migrateStorePricingMap(raw: unknown): StorePricingMap {
+  const fallback = DEFAULT_STORE_PRICING;
+  if (!raw || typeof raw !== "object") return fallback;
+  const r = raw as Record<string, unknown>;
+  const out: StorePricingMap = { ...fallback };
+  for (const storeKey of Object.keys(fallback) as Store[]) {
+    const sourceStore = r[storeKey] as Record<string, unknown> | undefined;
+    if (!sourceStore) continue;
+    const def = fallback[storeKey];
+    const sourcePaint = (sourceStore.paint ?? {}) as Record<string, unknown>;
+    const sourceMats = (sourceStore.materials ?? {}) as Record<string, unknown>;
+    out[storeKey] = {
+      paint: {
+        walls: toPriceEntry(sourcePaint.walls ?? def.paint.walls),
+        ceilings: toPriceEntry(sourcePaint.ceilings ?? def.paint.ceilings),
+        trim: toPriceEntry(sourcePaint.trim ?? def.paint.trim),
+        primer: toPriceEntry(sourcePaint.primer ?? def.paint.primer),
+      },
+      materials: Object.fromEntries(
+        Object.keys(def.materials).map((name) => [
+          name,
+          toPriceEntry(sourceMats[name] ?? def.materials[name]),
+        ]),
+      ),
+    };
+  }
+  return out;
+}
 
 export interface MaterialCost {
   name: string;
@@ -173,15 +238,16 @@ export function computeCosts(
   const m = locationMultiplier;
 
   const paintCosts = {
-    walls: estimate.wallGallons * prices.paint.walls * m,
-    ceilings: estimate.ceilingGallons * prices.paint.ceilings * m,
-    trim: estimate.trimGallons * prices.paint.trim * m,
-    primer: estimate.primerGallons * prices.paint.primer * m,
+    walls: estimate.wallGallons * prices.paint.walls.price * m,
+    ceilings: estimate.ceilingGallons * prices.paint.ceilings.price * m,
+    trim: estimate.trimGallons * prices.paint.trim.price * m,
+    primer: estimate.primerGallons * prices.paint.primer.price * m,
   };
 
   const materialCosts: MaterialCost[] = estimate.materials.map(
     (mi: MaterialItem) => {
-      const unitPrice = (prices.materials[mi.name] ?? 0) * m;
+      const entry = prices.materials[mi.name];
+      const unitPrice = (entry?.price ?? 0) * m;
       return {
         name: mi.name,
         qty: mi.qty,

@@ -11,7 +11,10 @@ import {
   STORES,
   computeCosts,
   getLocationInfo,
+  migrateStorePricingMap,
+  type PriceEntry,
   type Store,
+  type StorePricing,
   type StorePricingMap,
 } from "@/lib/pricing";
 import type { Extracted, ProjectInputs } from "@/lib/types";
@@ -101,7 +104,8 @@ function migrateSavedProject(raw: unknown): SavedProject | null {
     id: r.id,
     meta,
     inputs: r.inputs as ProjectInputs,
-    pricing: r.pricing as StorePricingMap,
+    // Pricing was previously raw numbers; coerce to PriceEntry shape.
+    pricing: migrateStorePricingMap(r.pricing),
     finalPrice: (r.finalPrice as number | null) ?? null,
     actuals,
     timestamp: typeof r.timestamp === "number" ? r.timestamp : Date.now(),
@@ -149,12 +153,18 @@ export default function Page() {
   // store-vs-store totals view inside the Costs card.
   const [compareStores, setCompareStores] = useState(false);
   // Editable pricing per store. Seeded from defaults; user can
-  // override any cell in the Pricing Settings panel.
+  // override any cell — including pasting a product URL and pulling
+  // a real price from /api/fetch-price.
   const [pricing, setPricing] = useState<StorePricingMap>(
     () => structuredClone(DEFAULT_STORE_PRICING),
   );
   const [showPricingSettings, setShowPricingSettings] = useState(false);
   const [pricingTab, setPricingTab] = useState<Store>("sherwin-williams");
+  // Fetch state per "store/category/key" so each row can show its
+  // own loading / error state without blocking siblings.
+  const [fetchState, setFetchState] = useState<
+    Record<string, { loading?: boolean; error?: string }>
+  >({});
   // UX: Quick / Detailed mode toggle. Quick hides extra detail
   // sections to keep the screen lean for fast bidding.
   const [mode, setMode] = useState<"quick" | "detailed">("quick");
@@ -393,6 +403,160 @@ export default function Page() {
     persistProjects(next);
   };
 
+  // ── Pricing entry mutators ─────────────────────────────────────
+  // Section: "paint" or "materials". Key: paint key (walls/ceilings/…)
+  // or material name. Patches a single PriceEntry inside the pricing
+  // table without touching siblings.
+  const updatePriceEntry = (
+    storeId: Store,
+    section: "paint" | "materials",
+    key: string,
+    patch: Partial<PriceEntry>,
+  ) => {
+    setPricing((prev) => {
+      const store = prev[storeId];
+      if (section === "paint") {
+        const paint = store.paint;
+        const current = paint[key as keyof StorePricing["paint"]];
+        return {
+          ...prev,
+          [storeId]: {
+            ...store,
+            paint: {
+              ...paint,
+              [key]: { ...current, ...patch },
+            },
+          },
+        };
+      }
+      const current =
+        store.materials[key] ?? { price: 0, url: "", lastUpdated: null };
+      return {
+        ...prev,
+        [storeId]: {
+          ...store,
+          materials: {
+            ...store.materials,
+            [key]: { ...current, ...patch },
+          },
+        },
+      };
+    });
+  };
+
+  // Pull a price from /api/fetch-price and patch the entry. Per-row
+  // loading + error tracked so the UI can show feedback inline.
+  const fetchPriceFor = async (
+    storeId: Store,
+    section: "paint" | "materials",
+    key: string,
+    url: string,
+  ) => {
+    const stateKey = `${storeId}|${section}|${key}`;
+    if (!url || !/^https?:\/\//.test(url)) {
+      setFetchState((s) => ({
+        ...s,
+        [stateKey]: { error: "Add a product URL first" },
+      }));
+      return;
+    }
+    setFetchState((s) => ({ ...s, [stateKey]: { loading: true } }));
+    try {
+      const res = await fetch("/api/fetch-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const json = await res.json();
+      if (!res.ok || typeof json.price !== "number") {
+        setFetchState((s) => ({
+          ...s,
+          [stateKey]: {
+            error: json.error || `Could not update price (${res.status})`,
+          },
+        }));
+        return;
+      }
+      updatePriceEntry(storeId, section, key, {
+        price: json.price,
+        lastUpdated: Date.now(),
+      });
+      setFetchState((s) => ({ ...s, [stateKey]: {} }));
+    } catch (e) {
+      setFetchState((s) => ({
+        ...s,
+        [stateKey]: {
+          error: e instanceof Error ? e.message : "Could not update price",
+        },
+      }));
+    }
+  };
+
+  // Bulk refresh: gather every entry that has a URL, send them to
+  // /api/update-prices in one request, and patch the table from the
+  // response. Single global state used to disable the button while
+  // running.
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshAllPrices = async () => {
+    type Item = {
+      storeId: Store;
+      section: "paint" | "materials";
+      key: string;
+      url: string;
+    };
+    const items: Item[] = [];
+    for (const storeId of Object.keys(pricing) as Store[]) {
+      const store = pricing[storeId];
+      (Object.keys(store.paint) as Array<keyof StorePricing["paint"]>).forEach(
+        (k) => {
+          const v = store.paint[k];
+          if (v.url) items.push({ storeId, section: "paint", key: k, url: v.url });
+        },
+      );
+      Object.entries(store.materials).forEach(([name, v]) => {
+        if (v.url)
+          items.push({ storeId, section: "materials", key: name, url: v.url });
+      });
+    }
+    if (items.length === 0) return;
+    setRefreshing(true);
+    try {
+      const res = await fetch("/api/update-prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: items.map((i) => ({ url: i.url })) }),
+      });
+      const json = await res.json();
+      const results: Array<{ url: string; price?: number; error?: string }> =
+        Array.isArray(json.results) ? json.results : [];
+      const now = Date.now();
+      // Map URL → result. URL is unique enough for V1; if the same URL
+      // is reused across stores, the first match wins.
+      const byUrl = new Map(results.map((r) => [r.url, r]));
+      items.forEach((it) => {
+        const r = byUrl.get(it.url);
+        if (r && typeof r.price === "number") {
+          updatePriceEntry(it.storeId, it.section, it.key, {
+            price: r.price,
+            lastUpdated: now,
+          });
+        }
+        const stateKey = `${it.storeId}|${it.section}|${it.key}`;
+        setFetchState((s) => ({
+          ...s,
+          [stateKey]:
+            r && typeof r.price === "number"
+              ? {}
+              : { error: r?.error || "Could not update price" },
+        }));
+      });
+    } catch {
+      /* network failure — leave existing prices intact */
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   // ── Export actions ───────────────────────────────────────────
   const copyEstimate = async () => {
     if (!costs) return;
@@ -564,6 +728,11 @@ export default function Page() {
         onDownloadPdf={downloadPdf}
         currentProject={currentProject}
         onUpdateActuals={updateActuals}
+        updatePriceEntry={updatePriceEntry}
+        fetchPriceFor={fetchPriceFor}
+        fetchState={fetchState}
+        refreshAllPrices={refreshAllPrices}
+        refreshing={refreshing}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -872,6 +1041,11 @@ function ResultArea({
   onDownloadPdf,
   currentProject,
   onUpdateActuals,
+  updatePriceEntry,
+  fetchPriceFor,
+  fetchState,
+  refreshAllPrices,
+  refreshing,
 }: {
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
@@ -908,6 +1082,21 @@ function ResultArea({
   onDownloadPdf: () => void;
   currentProject: SavedProject | null;
   onUpdateActuals: (field: keyof ActualValues, value: number | null) => void;
+  updatePriceEntry: (
+    storeId: Store,
+    section: "paint" | "materials",
+    key: string,
+    patch: Partial<PriceEntry>,
+  ) => void;
+  fetchPriceFor: (
+    storeId: Store,
+    section: "paint" | "materials",
+    key: string,
+    url: string,
+  ) => void;
+  fetchState: Record<string, { loading?: boolean; error?: string }>;
+  refreshAllPrices: () => void;
+  refreshing: boolean;
 }) {
   const isDetailed = mode === "detailed";
   // Step 3a — not confirmed yet: show the gate.
@@ -1005,7 +1194,11 @@ function ResultArea({
       {isDetailed && (
         <PricingSettingsCard
           pricing={pricing}
-          setPricing={setPricing}
+          updatePriceEntry={updatePriceEntry}
+          fetchPriceFor={fetchPriceFor}
+          fetchState={fetchState}
+          refreshAllPrices={refreshAllPrices}
+          refreshing={refreshing}
           expanded={showPricingSettings}
           onToggle={onTogglePricingSettings}
           activeTab={pricingTab}
@@ -1197,12 +1390,16 @@ function ResultArea({
   );
 }
 
-// Collapsible per-store pricing editor with a tabbed view (one tab per
-// store). Shows a small location indicator above the tabs when a ZIP
-// is matched.
+// Collapsible per-store pricing editor. Each row shows a price input,
+// a product-URL input, a Fetch Price button, and a last-updated stamp.
+// A Refresh All button at the top runs every URL in the table at once.
 function PricingSettingsCard({
   pricing,
-  setPricing,
+  updatePriceEntry,
+  fetchPriceFor,
+  fetchState,
+  refreshAllPrices,
+  refreshing,
   expanded,
   onToggle,
   activeTab,
@@ -1210,34 +1407,27 @@ function PricingSettingsCard({
   locationInfo,
 }: {
   pricing: StorePricingMap;
-  setPricing: React.Dispatch<React.SetStateAction<StorePricingMap>>;
+  updatePriceEntry: (
+    storeId: Store,
+    section: "paint" | "materials",
+    key: string,
+    patch: Partial<PriceEntry>,
+  ) => void;
+  fetchPriceFor: (
+    storeId: Store,
+    section: "paint" | "materials",
+    key: string,
+    url: string,
+  ) => void;
+  fetchState: Record<string, { loading?: boolean; error?: string }>;
+  refreshAllPrices: () => void;
+  refreshing: boolean;
   expanded: boolean;
   onToggle: () => void;
   activeTab: Store;
   onTabChange: (s: Store) => void;
   locationInfo: { region: string | null; multiplier: number };
 }) {
-  const setPaintPrice = (
-    s: Store,
-    key: keyof StorePricingMap[Store]["paint"],
-    value: number,
-  ) => {
-    setPricing((prev) => ({
-      ...prev,
-      [s]: { ...prev[s], paint: { ...prev[s].paint, [key]: value } },
-    }));
-  };
-
-  const setMaterialPrice = (s: Store, name: string, value: number) => {
-    setPricing((prev) => ({
-      ...prev,
-      [s]: {
-        ...prev[s],
-        materials: { ...prev[s].materials, [name]: value },
-      },
-    }));
-  };
-
   const active = pricing[activeTab];
   const materialNames = Object.keys(active.materials);
 
@@ -1265,13 +1455,23 @@ function PricingSettingsCard({
             </p>
           )}
         </div>
-        <button
-          type="button"
-          onClick={onToggle}
-          className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
-        >
-          {expanded ? "Hide pricing settings" : "Show pricing settings"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={refreshAllPrices}
+            disabled={refreshing}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {refreshing ? "Refreshing…" : "Refresh prices"}
+          </button>
+          <button
+            type="button"
+            onClick={onToggle}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+          >
+            {expanded ? "Hide pricing settings" : "Show pricing settings"}
+          </button>
+        </div>
       </header>
 
       {expanded && (
@@ -1302,7 +1502,7 @@ function PricingSettingsCard({
             <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
               Paint ($ / gallon)
             </h4>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="space-y-2">
               {(
                 [
                   ["walls", "Walls"],
@@ -1311,49 +1511,49 @@ function PricingSettingsCard({
                   ["primer", "Primer"],
                 ] as const
               ).map(([key, label]) => (
-                <SmallNumberField
+                <PricingRow
                   key={key}
                   label={label}
-                  value={active.paint[key]}
-                  onChange={(v) =>
-                    setPaintPrice(activeTab, key, Math.max(0, v ?? 0))
+                  entry={active.paint[key]}
+                  fetchKey={`${activeTab}|paint|${key}`}
+                  fetchState={fetchState}
+                  onPriceChange={(price) =>
+                    updatePriceEntry(activeTab, "paint", key, { price })
+                  }
+                  onUrlChange={(url) =>
+                    updatePriceEntry(activeTab, "paint", key, { url })
+                  }
+                  onFetch={(url) =>
+                    fetchPriceFor(activeTab, "paint", key, url)
                   }
                 />
               ))}
             </div>
           </div>
 
-          {/* Materials — scrollable on small screens */}
+          {/* Materials */}
           <div className="mt-5">
             <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
               Materials ($ / unit)
             </h4>
-            <div className="grid max-h-72 grid-cols-1 gap-2 overflow-auto pr-1 sm:grid-cols-2">
+            <div className="max-h-[28rem] space-y-2 overflow-auto pr-1">
               {materialNames.map((name) => (
-                <div
+                <PricingRow
                   key={name}
-                  className="flex items-center justify-between gap-2 rounded-md bg-zinc-950/40 px-2 py-1.5"
-                >
-                  <span className="truncate text-xs text-zinc-300">
-                    {name}
-                  </span>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    value={active.materials[name] ?? 0}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      const n =
-                        raw === "" ? 0 : Number.isFinite(Number(raw))
-                          ? Math.max(0, Number(raw))
-                          : 0;
-                      setMaterialPrice(activeTab, name, n);
-                    }}
-                    min={0}
-                    step={0.5}
-                    className="w-20 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-xs text-zinc-100 focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
+                  label={name}
+                  entry={active.materials[name]}
+                  fetchKey={`${activeTab}|materials|${name}`}
+                  fetchState={fetchState}
+                  onPriceChange={(price) =>
+                    updatePriceEntry(activeTab, "materials", name, { price })
+                  }
+                  onUrlChange={(url) =>
+                    updatePriceEntry(activeTab, "materials", name, { url })
+                  }
+                  onFetch={(url) =>
+                    fetchPriceFor(activeTab, "materials", name, url)
+                  }
+                />
               ))}
             </div>
           </div>
@@ -1363,37 +1563,72 @@ function PricingSettingsCard({
   );
 }
 
-function SmallNumberField({
+function PricingRow({
   label,
-  value,
-  onChange,
+  entry,
+  fetchKey,
+  fetchState,
+  onPriceChange,
+  onUrlChange,
+  onFetch,
 }: {
   label: string;
-  value: number;
-  onChange: (v: number | null) => void;
+  entry: PriceEntry;
+  fetchKey: string;
+  fetchState: Record<string, { loading?: boolean; error?: string }>;
+  onPriceChange: (price: number) => void;
+  onUrlChange: (url: string) => void;
+  onFetch: (url: string) => void;
 }) {
+  const state = fetchState[fetchKey] ?? {};
+  const lastUpdated = entry.lastUpdated
+    ? new Date(entry.lastUpdated).toLocaleDateString()
+    : "never";
   return (
-    <label className="block">
-      <span className="mb-1 block text-[10px] uppercase tracking-wide text-zinc-500">
-        {label}
-      </span>
-      <input
-        type="number"
-        inputMode="decimal"
-        value={value}
-        onChange={(e) => {
-          const raw = e.target.value;
-          if (raw === "") onChange(null);
-          else {
-            const n = Number(raw);
-            onChange(Number.isFinite(n) ? n : null);
-          }
-        }}
-        min={0}
-        step={1}
-        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 focus:border-amber-500 focus:outline-none"
-      />
-    </label>
+    <div className="rounded-md bg-zinc-950/40 p-2.5">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-xs text-zinc-300">
+          {label}
+        </span>
+        <input
+          type="number"
+          inputMode="decimal"
+          value={entry.price}
+          onChange={(e) => {
+            const raw = e.target.value;
+            const n = raw === "" ? 0 : Number(raw);
+            onPriceChange(Number.isFinite(n) ? Math.max(0, n) : 0);
+          }}
+          min={0}
+          step={0.5}
+          className="w-20 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-xs text-zinc-100 focus:border-amber-500 focus:outline-none"
+        />
+      </div>
+      <div className="mt-1.5 flex items-center gap-2">
+        <input
+          type="url"
+          value={entry.url}
+          onChange={(e) => onUrlChange(e.target.value)}
+          placeholder="Product URL (https://…)"
+          className="min-w-0 flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 outline-none transition focus:border-amber-500"
+        />
+        <button
+          type="button"
+          onClick={() => onFetch(entry.url)}
+          disabled={!entry.url || state.loading}
+          className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          {state.loading ? "Fetching…" : "Fetch Price"}
+        </button>
+      </div>
+      <div className="mt-1 flex items-center justify-between text-[10px]">
+        <span className={state.error ? "text-red-400" : "text-zinc-600"}>
+          {state.error
+            ? `Could not update price: ${state.error}`
+            : `Last updated: ${lastUpdated}`}
+        </span>
+      </div>
+    </div>
   );
 }
 
