@@ -2270,24 +2270,20 @@ function MaterialsTab({
   const materialNames = Object.keys(
     DEFAULT_STORE_PRICING["home-depot"].materials,
   );
-  const [target, setTarget] = useState<string>(materialNames[0]);
-  const [description, setDescription] = useState<string>(
-    materialNames[0],
-  );
+  const [description, setDescription] = useState<string>("");
   const [phase, setPhase] = useState<
     "idle" | "finding" | "fetching" | "done"
   >("idle");
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<MaterialResult[]>([]);
-
-  // When the user changes the target dropdown, prefill the description.
-  const onTargetChange = (next: string) => {
-    setTarget(next);
-    setDescription(next);
-  };
+  // Which line item the AI picked for this run. We surface it in the
+  // results so the user knows where the prices were written.
+  const [matchedTarget, setMatchedTarget] = useState<string | null>(null);
 
   const findAcross = async () => {
+    if (description.trim().length < 2) return;
     setError(null);
+    setMatchedTarget(null);
     setPhase("finding");
     setResults(
       FIND_STORES.map((s) => ({
@@ -2295,7 +2291,7 @@ function MaterialsTab({
         productName: null,
         url: null,
         price: null,
-        previousPrice: pricing[s].materials[target]?.price ?? null,
+        previousPrice: null,
         flagReason: null,
         status: "finding",
       })),
@@ -2306,6 +2302,7 @@ function MaterialsTab({
       url: string | null;
       productName: string | null;
     }> = [];
+    let target: string | null = null;
     try {
       const res = await fetch("/api/find-products", {
         method: "POST",
@@ -2313,6 +2310,8 @@ function MaterialsTab({
         body: JSON.stringify({
           description,
           stores: FIND_STORES,
+          // Let Claude pick which existing line item this maps to.
+          materialOptions: materialNames,
         }),
       });
       const json = await res.json();
@@ -2333,6 +2332,11 @@ function MaterialsTab({
         return;
       }
       findResults = json.results;
+      target =
+        typeof json.targetMaterial === "string"
+          ? json.targetMaterial
+          : null;
+      setMatchedTarget(target);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error");
       setPhase("done");
@@ -2346,7 +2350,29 @@ function MaterialsTab({
       return;
     }
 
-    // Move to fetching phase per row in parallel.
+    if (!target) {
+      setError(
+        `Couldn't map "${description}" to one of the existing line items. Try a more specific description (e.g. "Blue painters tape 1 inch").`,
+      );
+      setPhase("done");
+      setResults((prev) =>
+        prev.map((r) => ({
+          ...r,
+          status: "error",
+          errorMessage: "Unmapped",
+        })),
+      );
+      return;
+    }
+
+    // Now we know which line item — pull the previous price per store.
+    setResults((prev) =>
+      prev.map((r) => ({
+        ...r,
+        previousPrice: pricing[r.store].materials[target!]?.price ?? null,
+      })),
+    );
+
     setPhase("fetching");
     setResults((prev) =>
       prev.map((r) => {
@@ -2394,8 +2420,9 @@ function MaterialsTab({
             return;
           }
           const price: number = json.price;
-          const previous = pricing[storeId].materials[target]?.price ?? null;
-          const def = defaultPriceFor(storeId, "materials", target);
+          const previous =
+            pricing[storeId].materials[target!]?.price ?? null;
+          const def = defaultPriceFor(storeId, "materials", target!);
           const flag = flagPrice(price, def, previous, "materials");
           setResults((prev) =>
             prev.map((r) =>
@@ -2410,10 +2437,7 @@ function MaterialsTab({
                 : r,
             ),
           );
-          // Write through to pricing state immediately so the rest of
-          // the app sees the new price. Manual override + revert remain
-          // possible from the row controls below.
-          updatePriceEntry(storeId, "materials", target, {
+          updatePriceEntry(storeId, "materials", target!, {
             price,
             url: found.url,
             lastUpdated: Date.now(),
@@ -2441,8 +2465,8 @@ function MaterialsTab({
 
   const revert = (storeId: Store) => {
     const result = results.find((r) => r.store === storeId);
-    if (!result || result.previousPrice === null) return;
-    updatePriceEntry(storeId, "materials", target, {
+    if (!result || result.previousPrice === null || !matchedTarget) return;
+    updatePriceEntry(storeId, "materials", matchedTarget, {
       price: result.previousPrice,
       // Keep the URL — only the price is reverted.
       lastUpdated: Date.now(),
@@ -2487,45 +2511,48 @@ function MaterialsTab({
       </p>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label className="block">
-            <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
-              Material
-            </span>
-            <select
-              value={target}
-              onChange={(e) => onTargetChange(e.target.value)}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-amber-500 focus:outline-none"
-            >
-              {materialNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
-              Description (search query)
-            </span>
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder='e.g. "ScotchBlue 1.88in painters tape"'
-              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
-            />
-          </label>
-        </div>
+        <label className="block">
+          <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+            Description
+          </span>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                phase !== "finding" &&
+                phase !== "fetching"
+              ) {
+                findAcross();
+              }
+            }}
+            placeholder='e.g. "blue painters tape 1 inch" or "ram board"'
+            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+          />
+        </label>
         <button
           type="button"
           onClick={findAcross}
-          disabled={phase === "finding" || phase === "fetching"}
+          disabled={
+            phase === "finding" ||
+            phase === "fetching" ||
+            description.trim().length < 2
+          }
           className="self-end rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {buttonLabel}
         </button>
       </div>
+
+      {matchedTarget && (
+        <p className="mt-3 text-xs text-zinc-400">
+          Matched to{" "}
+          <span className="font-medium text-amber-300">{matchedTarget}</span>
+          {" — "}prices below have been written into Pricing Settings.
+        </p>
+      )}
 
       {error && (
         <div className="mt-4 rounded-md border border-red-900/60 bg-red-950/40 p-3 text-xs text-red-300">

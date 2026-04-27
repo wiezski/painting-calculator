@@ -51,6 +51,8 @@ export async function POST(req: NextRequest) {
 
   const description = (body as { description?: unknown }).description;
   const stores = (body as { stores?: unknown }).stores;
+  const materialOptions = (body as { materialOptions?: unknown })
+    .materialOptions;
 
   if (typeof description !== "string" || description.trim().length < 2) {
     return NextResponse.json(
@@ -75,9 +77,23 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const validMaterialOptions = Array.isArray(materialOptions)
+    ? (materialOptions as unknown[]).filter(
+        (s): s is string => typeof s === "string" && s.length > 0,
+      )
+    : [];
+
   const storeList = validStores
     .map((s) => `- ${s} (${STORE_DOMAINS[s]})`)
     .join("\n");
+
+  // When we have a list of material categories the result must map to
+  // one of them, so the frontend can write prices into the right cell.
+  const matchBlock = validMaterialOptions.length
+    ? `\n\nIn addition to finding products, identify which of these existing material categories best matches the description. The targetMaterial field MUST be exactly one of these strings:\n${validMaterialOptions
+        .map((m) => `- ${m}`)
+        .join("\n")}\nIf nothing fits, set targetMaterial to null.`
+    : "";
 
   // Web-search-enabled prompt. Claude calls the web_search tool then
   // returns a JSON object summarizing the matches.
@@ -95,17 +111,20 @@ For each store:
 - Pick the most relevant single product (consumer-grade, common pack size).
 - Return the direct product page URL — not a search results page or category page.
 - Return a short product name as displayed on the page.
-- If you cannot find a clear product page on that retailer, return null for url and productName.
+- If you cannot find a clear product page on that retailer, return null for url and productName.${matchBlock}
 
 Return ONLY this JSON shape (no commentary, no code fences):
 
 {
+  "targetMaterial": "<one of the categories above>" or null,
   "results": [
     { "store": "<store-id>", "url": "<https://...>" or null, "productName": "<name>" or null }
   ]
 }
 
-The "store" field MUST be one of the IDs in the list above (not the domain).`;
+The "store" field MUST be one of the IDs in the list above (not the domain).${
+    validMaterialOptions.length === 0 ? "\nIf no material list was provided, set targetMaterial to null." : ""
+  }`;
 
   let client: Anthropic;
   try {
@@ -184,5 +203,15 @@ The "store" field MUST be one of the IDs in the list above (not the domain).`;
     return { store, url, productName };
   });
 
-  return NextResponse.json({ results });
+  // Validate targetMaterial against the supplied list. If the model
+  // returned a string outside the allowed set, drop it.
+  const rawTarget = (parsed as { targetMaterial?: unknown }).targetMaterial;
+  const targetMaterial =
+    typeof rawTarget === "string" &&
+    (validMaterialOptions.length === 0 ||
+      validMaterialOptions.includes(rawTarget))
+      ? rawTarget
+      : null;
+
+  return NextResponse.json({ results, targetMaterial });
 }
