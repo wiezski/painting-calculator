@@ -112,9 +112,10 @@ For each store:
 - Pick the most relevant single product (consumer-grade, common pack size).
 - Return the direct product page URL — not a search results page or category page.
 - Return a short product name as displayed on the page.
-- Return the current listed price as a plain number in USD (e.g. 5.99). Use only the main product price, not "save $X" or shipping. If multiple sizes are shown, return the price for the size most relevant to the description.
+- Return the current listed price as a plain number in USD (e.g. 5.99). Use only the main product price — NOT shipping ("$5.99 shipping"), promotional savings ("Save $20"), original-before-discount prices, or per-roll prices when the listing is multi-roll. If multiple sizes are shown, return the price for the size most relevant to the description.
+- For Lowe's specifically: prices are usually in the page HTML even before clicking "see in cart". If your first search snippet doesn't include a price, run a second web_search with the product name to land on the actual product page and read it from there. If the page genuinely shows no price (rare), return null.
 - If you cannot find a clear product page on that retailer, set url, productName, and price to null.
-- If you can find the page but the price isn't visible, return url and productName but set price to null.${matchBlock}
+- If you can find the page but the price isn't visible after a second look, return url and productName but set price to null.${matchBlock}
 
 Return ONLY this JSON shape (no commentary, no code fences):
 
@@ -150,7 +151,10 @@ The "store" field MUST be one of the IDs in the list above (not the domain).${
         {
           type: "web_search_20250305",
           name: "web_search",
-          max_uses: validStores.length * 2,
+          // Up to 3 searches per store: one to locate the product page,
+          // optionally a second to confirm price (helps with Lowe's),
+          // and a buffer for retries.
+          max_uses: validStores.length * 3,
         } as any,
       ],
       messages: [{ role: "user", content: prompt }],

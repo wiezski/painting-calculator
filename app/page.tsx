@@ -2517,96 +2517,105 @@ function MaterialsTab({
       )}
 
       {results.length > 0 && (
-        <div className="mt-5 overflow-hidden rounded-lg border border-zinc-800">
-          <table className="w-full table-fixed text-sm">
-            <colgroup>
-              <col className="w-28" />
-              <col />
-              <col className="w-24" />
-              <col className="w-44" />
-            </colgroup>
-            <thead className="bg-zinc-950/60 text-[10px] uppercase tracking-wide text-zinc-500">
-              <tr>
-                <th className="px-3 py-2 text-left">Store</th>
-                <th className="px-3 py-2 text-left">Product</th>
-                <th className="px-3 py-2 text-right">Price</th>
-                <th className="px-3 py-2 text-left">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800">
-              {results.map((r) => {
-                const storeLabel =
-                  STORES.find((s) => s.id === r.store)?.label ?? r.store;
-                return (
-                  <tr key={r.store} className="text-zinc-200">
-                    <td className="px-3 py-2 font-medium">{storeLabel}</td>
-                    <td className="px-3 py-2">
-                      {r.url ? (
-                        <a
-                          href={r.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="truncate text-amber-300 underline-offset-2 hover:underline"
-                        >
-                          {r.productName || "View product"}
-                        </a>
-                      ) : (
-                        <span className="text-zinc-500">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right">
+        <ul className="mt-5 space-y-2">
+          {results.map((r) => {
+            const storeLabel =
+              STORES.find((s) => s.id === r.store)?.label ?? r.store;
+            const inFlight =
+              r.status === "finding" || r.status === "fetching";
+            const ok = r.status === "ok" && !r.flagReason;
+            const flagged = r.status === "ok" && !!r.flagReason;
+            const errored = r.status === "error";
+            const borderClass = ok
+              ? "border-emerald-700/60"
+              : flagged
+                ? "border-amber-700/60"
+                : errored
+                  ? "border-red-900/60"
+                  : "border-zinc-800";
+
+            return (
+              <li
+                key={r.store}
+                className={`rounded-lg border bg-zinc-950/40 p-3 ${borderClass}`}
+              >
+                {/* Top row: store + price + status */}
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium uppercase tracking-wide text-zinc-300">
+                    {storeLabel}
+                  </span>
+                  <div className="flex items-baseline gap-3">
+                    <span className="text-sm font-semibold text-zinc-100">
                       {r.price !== null ? fmtMoney(r.price) : "—"}
-                      {r.previousPrice !== null &&
-                        r.price !== null &&
-                        r.previousPrice !== r.price && (
-                          <span className="ml-1 text-[10px] text-zinc-500">
-                            (was {fmtMoney(r.previousPrice)})
-                          </span>
-                        )}
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      {r.status === "finding" && (
-                        <span className="text-zinc-400">Finding…</span>
-                      )}
-                      {r.status === "fetching" && (
-                        <span className="text-zinc-400">Fetching…</span>
-                      )}
-                      {r.status === "ok" && !r.flagReason && (
-                        <span className="text-emerald-300">Updated ✓</span>
-                      )}
-                      {r.status === "ok" && r.flagReason && (
-                        <span className="flex items-center gap-2">
-                          <span className="text-amber-300">
-                            ⚠ {r.flagReason}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => revert(r.store)}
-                            className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800"
-                          >
-                            Revert
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => keep(r.store)}
-                            className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800"
-                          >
-                            Keep
-                          </button>
+                    </span>
+                    {r.previousPrice !== null &&
+                      r.price !== null &&
+                      r.previousPrice !== r.price && (
+                        <span className="text-[10px] text-zinc-500">
+                          was {fmtMoney(r.previousPrice)}
                         </span>
                       )}
-                      {r.status === "error" && (
-                        <span className="text-red-400">
-                          {r.errorMessage || "Could not update"}
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                    <span
+                      className={`text-[11px] ${
+                        ok
+                          ? "text-emerald-300"
+                          : flagged
+                            ? "text-amber-300"
+                            : errored
+                              ? "text-red-400"
+                              : "text-zinc-400"
+                      }`}
+                    >
+                      {inFlight && "Searching…"}
+                      {ok && "Updated ✓"}
+                      {flagged && `⚠ ${r.flagReason}`}
+                      {errored && (r.errorMessage || "Could not update")}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Bottom row: product link wraps freely on its own line */}
+                {r.url ? (
+                  <a
+                    href={r.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1.5 block break-words text-xs text-amber-300 underline-offset-2 hover:underline"
+                  >
+                    {r.productName || "View product"}
+                  </a>
+                ) : (
+                  !inFlight &&
+                  !errored && (
+                    <span className="mt-1.5 block text-xs text-zinc-500">
+                      —
+                    </span>
+                  )
+                )}
+
+                {/* Revert / Keep — only when flagged */}
+                {flagged && (
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => revert(r.store)}
+                      className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-zinc-800"
+                    >
+                      Revert to {fmtMoney(r.previousPrice ?? 0)}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => keep(r.store)}
+                      className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-zinc-800"
+                    >
+                      Keep new price
+                    </button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </section>
   );
