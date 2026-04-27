@@ -15,6 +15,7 @@ interface FindResult {
   store: string;
   url: string | null;
   productName: string | null;
+  price: number | null;
   error?: string;
 }
 
@@ -111,14 +112,16 @@ For each store:
 - Pick the most relevant single product (consumer-grade, common pack size).
 - Return the direct product page URL — not a search results page or category page.
 - Return a short product name as displayed on the page.
-- If you cannot find a clear product page on that retailer, return null for url and productName.${matchBlock}
+- Return the current listed price as a plain number in USD (e.g. 5.99). Use only the main product price, not "save $X" or shipping. If multiple sizes are shown, return the price for the size most relevant to the description.
+- If you cannot find a clear product page on that retailer, set url, productName, and price to null.
+- If you can find the page but the price isn't visible, return url and productName but set price to null.${matchBlock}
 
 Return ONLY this JSON shape (no commentary, no code fences):
 
 {
   "targetMaterial": "<one of the categories above>" or null,
   "results": [
-    { "store": "<store-id>", "url": "<https://...>" or null, "productName": "<name>" or null }
+    { "store": "<store-id>", "url": "<https://...>" or null, "productName": "<name>" or null, "price": <number> or null }
   ]
 }
 
@@ -193,14 +196,21 @@ The "store" field MUST be one of the IDs in the list above (not the domain).${
         typeof r === "object" &&
         (r as Record<string, unknown>).store === store,
     ) as Record<string, unknown> | undefined;
-    if (!found) return { store, url: null, productName: null };
+    if (!found) {
+      return { store, url: null, productName: null, price: null };
+    }
     const url =
       typeof found.url === "string" && /^https?:\/\//.test(found.url)
         ? found.url
         : null;
     const productName =
       typeof found.productName === "string" ? found.productName : null;
-    return { store, url, productName };
+    const rawPrice = found.price;
+    const price =
+      typeof rawPrice === "number" && Number.isFinite(rawPrice) && rawPrice >= 0
+        ? rawPrice
+        : null;
+    return { store, url, productName, price };
   });
 
   // Validate targetMaterial against the supplied list. If the model

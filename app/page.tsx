@@ -2301,6 +2301,7 @@ function MaterialsTab({
       store: string;
       url: string | null;
       productName: string | null;
+      price: number | null;
     }> = [];
     let target: string | null = null;
     try {
@@ -2373,7 +2374,9 @@ function MaterialsTab({
       })),
     );
 
-    setPhase("fetching");
+    // Claude already returned URL + product name + price in a single
+    // call. Apply flag checks per row and write through to pricing.
+    const now = Date.now();
     setResults((prev) =>
       prev.map((r) => {
         const found = findResults.find((f) => f.store === r.store);
@@ -2384,80 +2387,35 @@ function MaterialsTab({
             errorMessage: "Not found at this store",
           };
         }
+        if (typeof found.price !== "number") {
+          return {
+            ...r,
+            url: found.url,
+            productName: found.productName,
+            status: "error",
+            errorMessage:
+              "Found product but price wasn't visible — visit URL to confirm",
+          };
+        }
+        const previous =
+          pricing[r.store].materials[target!]?.price ?? null;
+        const def = defaultPriceFor(r.store, "materials", target!);
+        const flag = flagPrice(found.price, def, previous, "materials");
+        // Push the new price into pricing state immediately.
+        updatePriceEntry(r.store, "materials", target!, {
+          price: found.price,
+          url: found.url,
+          lastUpdated: now,
+        });
         return {
           ...r,
           url: found.url,
           productName: found.productName,
-          status: "fetching",
+          price: found.price,
+          previousPrice: previous,
+          flagReason: flag,
+          status: "ok",
         };
-      }),
-    );
-
-    await Promise.all(
-      FIND_STORES.map(async (storeId) => {
-        const found = findResults.find((f) => f.store === storeId);
-        if (!found || !found.url) return;
-        try {
-          const res = await fetch("/api/fetch-price", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: found.url }),
-          });
-          const json = await res.json();
-          if (!res.ok || typeof json.price !== "number") {
-            setResults((prev) =>
-              prev.map((r) =>
-                r.store === storeId
-                  ? {
-                      ...r,
-                      status: "error",
-                      errorMessage:
-                        json.error || "Could not fetch price",
-                    }
-                  : r,
-              ),
-            );
-            return;
-          }
-          const price: number = json.price;
-          const previous =
-            pricing[storeId].materials[target!]?.price ?? null;
-          const def = defaultPriceFor(storeId, "materials", target!);
-          const flag = flagPrice(price, def, previous, "materials");
-          setResults((prev) =>
-            prev.map((r) =>
-              r.store === storeId
-                ? {
-                    ...r,
-                    price,
-                    previousPrice: previous,
-                    flagReason: flag,
-                    status: "ok",
-                  }
-                : r,
-            ),
-          );
-          updatePriceEntry(storeId, "materials", target!, {
-            price,
-            url: found.url,
-            lastUpdated: Date.now(),
-          });
-        } catch (e) {
-          setResults((prev) =>
-            prev.map((r) =>
-              r.store === storeId
-                ? {
-                    ...r,
-                    status: "error",
-                    errorMessage:
-                      e instanceof Error
-                        ? e.message
-                        : "Could not fetch price",
-                  }
-                : r,
-            ),
-          );
-        }
       }),
     );
     setPhase("done");
@@ -2493,11 +2451,9 @@ function MaterialsTab({
   };
 
   const buttonLabel =
-    phase === "finding"
-      ? "Finding products…"
-      : phase === "fetching"
-        ? "Fetching prices…"
-        : "Find Prices Across Stores";
+    phase === "finding" || phase === "fetching"
+      ? "Finding products & prices…"
+      : "Find Prices Across Stores";
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
@@ -2505,9 +2461,9 @@ function MaterialsTab({
         Source Materials
       </h2>
       <p className="mb-4 text-xs text-zinc-500">
-        Paste a short description, pick which line item it maps to, and
-        let the AI find products + prices on Home Depot and Lowe&apos;s
-        in one click. Manual override remains in the Pricing tab.
+        Type a short description and the AI will find products + current
+        prices on Home Depot and Lowe&apos;s, then map them into the
+        right line item. Manual override remains in the Pricing tab.
       </p>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
@@ -2562,7 +2518,13 @@ function MaterialsTab({
 
       {results.length > 0 && (
         <div className="mt-5 overflow-hidden rounded-lg border border-zinc-800">
-          <table className="w-full text-sm">
+          <table className="w-full table-fixed text-sm">
+            <colgroup>
+              <col className="w-28" />
+              <col />
+              <col className="w-24" />
+              <col className="w-44" />
+            </colgroup>
             <thead className="bg-zinc-950/60 text-[10px] uppercase tracking-wide text-zinc-500">
               <tr>
                 <th className="px-3 py-2 text-left">Store</th>
