@@ -44,6 +44,19 @@ const DEFAULT_META: ProjectMeta = {
   phone: "",
 };
 
+// Real-world job tracking — what the contractor actually spent.
+interface ActualValues {
+  materialCost: number | null;
+  laborCost: number | null;
+  hours: number | null;
+}
+
+const DEFAULT_ACTUALS: ActualValues = {
+  materialCost: null,
+  laborCost: null,
+  hours: null,
+};
+
 // Persisted projects in localStorage.
 interface SavedProject {
   id: string;
@@ -51,6 +64,7 @@ interface SavedProject {
   inputs: ProjectInputs;
   pricing: StorePricingMap;
   finalPrice: number | null;
+  actuals: ActualValues;
   timestamp: number;
 }
 
@@ -60,26 +74,36 @@ function newProjectId(): string {
   return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// Migrates older saved projects (which had a top-level `name` field)
-// into the new shape with `meta`. Idempotent.
+// Migrates older saved projects into the latest shape. Idempotent.
 function migrateSavedProject(raw: unknown): SavedProject | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.id !== "string") return null;
-  if (r.meta && typeof r.meta === "object") return r as unknown as SavedProject;
-  // Pre-meta shape: { name, inputs, pricing, finalPrice, timestamp }.
+
+  // Build a normalized record regardless of which version it came in as.
+  const meta: ProjectMeta =
+    r.meta && typeof r.meta === "object"
+      ? (r.meta as ProjectMeta)
+      : {
+          customerName: "",
+          projectName: typeof r.name === "string" ? r.name : "",
+          address: "",
+          city: "",
+          phone: "",
+        };
+
+  const actuals: ActualValues =
+    r.actuals && typeof r.actuals === "object"
+      ? { ...DEFAULT_ACTUALS, ...(r.actuals as Partial<ActualValues>) }
+      : DEFAULT_ACTUALS;
+
   return {
     id: r.id,
-    meta: {
-      customerName: "",
-      projectName: typeof r.name === "string" ? r.name : "",
-      address: "",
-      city: "",
-      phone: "",
-    },
+    meta,
     inputs: r.inputs as ProjectInputs,
     pricing: r.pricing as StorePricingMap,
     finalPrice: (r.finalPrice as number | null) ?? null,
+    actuals,
     timestamp: typeof r.timestamp === "number" ? r.timestamp : Date.now(),
   };
 }
@@ -145,6 +169,11 @@ export default function Page() {
   const [projectMeta, setProjectMeta] = useState<ProjectMeta>(DEFAULT_META);
   // Saved-projects search filter — matches displayName or city.
   const [search, setSearch] = useState("");
+  // Tracks the project currently loaded for editing — used to scope
+  // the Job Performance card's actuals editor.
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(
+    null,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
 
   const setMetaField = <K extends keyof ProjectMeta>(
@@ -213,6 +242,15 @@ export default function Page() {
       costs: computeCosts(result, inputs, s.id, pricing, locationInfo.multiplier),
     }));
   }, [result, inputs, pricing, locationInfo.multiplier]);
+
+  // Currently loaded project (for the Job Performance card).
+  const currentProject = useMemo(
+    () =>
+      currentProjectId
+        ? savedProjects.find((p) => p.id === currentProjectId) ?? null
+        : null,
+    [currentProjectId, savedProjects],
+  );
 
   const setField = <K extends keyof ProjectInputs>(
     key: K,
@@ -293,9 +331,11 @@ export default function Page() {
       inputs,
       pricing,
       finalPrice: costs.jobPricing.finalPrice,
+      actuals: DEFAULT_ACTUALS,
       timestamp: Date.now(),
     };
     persistProjects([project, ...savedProjects]);
+    setCurrentProjectId(project.id);
   };
 
   const loadProject = (p: SavedProject) => {
@@ -305,6 +345,7 @@ export default function Page() {
     setPricing(p.pricing);
     setProjectMeta(p.meta);
     setConfirmed(true);
+    setCurrentProjectId(p.id);
   };
 
   const duplicateProject = (p: SavedProject) => {
@@ -317,6 +358,8 @@ export default function Page() {
           ? `${p.meta.projectName} (copy)`
           : "",
       },
+      // Fresh copy starts with empty actuals — those are job-specific.
+      actuals: DEFAULT_ACTUALS,
       timestamp: Date.now(),
     };
     persistProjects([copy, ...savedProjects]);
@@ -324,7 +367,30 @@ export default function Page() {
 
   const deleteProject = (id: string) => {
     if (!window.confirm("Delete this project?")) return;
+    if (id === currentProjectId) setCurrentProjectId(null);
     persistProjects(savedProjects.filter((p) => p.id !== id));
+  };
+
+  // Updates a single actuals field on the currently-loaded project
+  // and writes the change back to localStorage immediately.
+  const updateActuals = (
+    field: keyof ActualValues,
+    value: number | null,
+  ) => {
+    if (!currentProjectId) return;
+    const next = savedProjects.map((p) =>
+      p.id === currentProjectId
+        ? {
+            ...p,
+            actuals: {
+              ...DEFAULT_ACTUALS,
+              ...p.actuals,
+              [field]: value,
+            },
+          }
+        : p,
+    );
+    persistProjects(next);
   };
 
   // ── Export actions ───────────────────────────────────────────
@@ -496,6 +562,8 @@ export default function Page() {
         projectMeta={projectMeta}
         onCopyEstimate={copyEstimate}
         onDownloadPdf={downloadPdf}
+        currentProject={currentProject}
+        onUpdateActuals={updateActuals}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -802,6 +870,8 @@ function ResultArea({
   projectMeta,
   onCopyEstimate,
   onDownloadPdf,
+  currentProject,
+  onUpdateActuals,
 }: {
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
@@ -836,6 +906,8 @@ function ResultArea({
   projectMeta: ProjectMeta;
   onCopyEstimate: () => void;
   onDownloadPdf: () => void;
+  currentProject: SavedProject | null;
+  onUpdateActuals: (field: keyof ActualValues, value: number | null) => void;
 }) {
   const isDetailed = mode === "detailed";
   // Step 3a — not confirmed yet: show the gate.
@@ -1111,6 +1183,14 @@ function ResultArea({
           costs={costs}
           onCopy={onCopyEstimate}
           onDownloadPdf={onDownloadPdf}
+        />
+      )}
+
+      {currentProject && costs && (
+        <JobPerformanceCard
+          project={currentProject}
+          costs={costs}
+          onUpdate={onUpdateActuals}
         />
       )}
     </section>
@@ -1824,6 +1904,144 @@ function EstimateSummaryCard({
             {fmtMoney(costs.jobPricing.finalPrice)}
           </span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Job Performance — only shown when a saved project is currently
+// loaded (so we have a place to write back actuals). Lets the user
+// enter Actual Material Cost / Labor Cost / Hours and shows a
+// side-by-side estimate vs actual comparison with color feedback.
+function JobPerformanceCard({
+  project,
+  costs,
+  onUpdate,
+}: {
+  project: SavedProject;
+  costs: NonNullable<ReturnType<typeof computeCosts>>;
+  onUpdate: (field: keyof ActualValues, value: number | null) => void;
+}) {
+  const actuals = project.actuals;
+  const finalPrice = project.finalPrice ?? costs.jobPricing.finalPrice;
+
+  const estCost = costs.jobPricing.materials + costs.jobPricing.labor;
+  const estProfit = finalPrice - estCost;
+  const estMargin = finalPrice > 0 ? (estProfit / finalPrice) * 100 : 0;
+
+  const hasActuals =
+    actuals.materialCost !== null || actuals.laborCost !== null;
+  const actualMaterialCost = actuals.materialCost ?? 0;
+  const actualLaborCost = actuals.laborCost ?? 0;
+  const actualCost = actualMaterialCost + actualLaborCost;
+  const actualProfit = finalPrice - actualCost;
+  const actualMargin = finalPrice > 0 ? (actualProfit / finalPrice) * 100 : 0;
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <h3 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-400">
+        Job Performance
+      </h3>
+
+      <Grid>
+        <NumberField
+          label="Actual Material Cost"
+          value={actuals.materialCost}
+          onChange={(v) => onUpdate("materialCost", v)}
+          placeholder="—"
+          min={0}
+          step={1}
+        />
+        <NumberField
+          label="Actual Labor Cost"
+          value={actuals.laborCost}
+          onChange={(v) => onUpdate("laborCost", v)}
+          placeholder="—"
+          min={0}
+          step={1}
+        />
+        <NumberField
+          label="Actual Hours (optional)"
+          value={actuals.hours}
+          onChange={(v) => onUpdate("hours", v)}
+          placeholder="—"
+          min={0}
+          step={0.5}
+        />
+      </Grid>
+
+      {hasActuals ? (
+        <div className="mt-5 space-y-1 text-sm">
+          <ComparisonHeader />
+          <ComparisonRow
+            label="Cost"
+            estimate={estCost}
+            actual={actualCost}
+            format="money"
+          />
+          <ComparisonRow
+            label="Profit"
+            estimate={estProfit}
+            actual={actualProfit}
+            format="money"
+          />
+          <ComparisonRow
+            label="Margin"
+            estimate={estMargin}
+            actual={actualMargin}
+            format="percent"
+          />
+        </div>
+      ) : (
+        <p className="mt-4 text-xs text-zinc-500">
+          Enter at least one actual value above to see the comparison.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ComparisonHeader() {
+  return (
+    <div className="grid grid-cols-4 gap-3 border-b border-zinc-800 pb-1.5 text-[10px] uppercase tracking-wide text-zinc-500">
+      <div></div>
+      <div>Estimate</div>
+      <div>Actual</div>
+      <div>Difference</div>
+    </div>
+  );
+}
+
+function ComparisonRow({
+  label,
+  estimate,
+  actual,
+  format,
+}: {
+  label: string;
+  estimate: number;
+  actual: number;
+  format: "money" | "percent";
+}) {
+  const fmt = (n: number) =>
+    format === "money" ? fmtMoney(n) : `${n.toFixed(1)}%`;
+  const diff = actual - estimate;
+  // Per spec: actual > estimate → green; actual < estimate → red.
+  const color =
+    diff > 0
+      ? "text-emerald-300"
+      : diff < 0
+        ? "text-red-300"
+        : "text-zinc-400";
+  const sign = diff > 0 ? "+" : "";
+  return (
+    <div className="grid grid-cols-4 gap-3 py-1.5">
+      <div className="text-zinc-400">{label}</div>
+      <div className="text-zinc-100">{fmt(estimate)}</div>
+      <div className="text-zinc-100">{fmt(actual)}</div>
+      <div className={color}>
+        {sign}
+        {fmt(diff)}
       </div>
     </div>
   );
