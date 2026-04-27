@@ -25,10 +25,29 @@ type AiState =
   | { status: "ready" }
   | { status: "error"; message: string };
 
+// Customer / project context for a saved estimate. Kept separate
+// from ProjectInputs because none of these fields affect the math —
+// they're metadata for record-keeping.
+interface ProjectMeta {
+  customerName: string;
+  projectName: string;
+  address: string;
+  city: string;
+  phone: string;
+}
+
+const DEFAULT_META: ProjectMeta = {
+  customerName: "",
+  projectName: "",
+  address: "",
+  city: "",
+  phone: "",
+};
+
 // Persisted projects in localStorage.
 interface SavedProject {
   id: string;
-  name: string;
+  meta: ProjectMeta;
   inputs: ProjectInputs;
   pricing: StorePricingMap;
   finalPrice: number | null;
@@ -39,6 +58,43 @@ const PROJECTS_STORAGE_KEY = "painting-calculator-projects-v1";
 
 function newProjectId(): string {
   return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Migrates older saved projects (which had a top-level `name` field)
+// into the new shape with `meta`. Idempotent.
+function migrateSavedProject(raw: unknown): SavedProject | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string") return null;
+  if (r.meta && typeof r.meta === "object") return r as unknown as SavedProject;
+  // Pre-meta shape: { name, inputs, pricing, finalPrice, timestamp }.
+  return {
+    id: r.id,
+    meta: {
+      customerName: "",
+      projectName: typeof r.name === "string" ? r.name : "",
+      address: "",
+      city: "",
+      phone: "",
+    },
+    inputs: r.inputs as ProjectInputs,
+    pricing: r.pricing as StorePricingMap,
+    finalPrice: (r.finalPrice as number | null) ?? null,
+    timestamp: typeof r.timestamp === "number" ? r.timestamp : Date.now(),
+  };
+}
+
+// Display name for a saved project: uses projectName if set, otherwise
+// falls back to "Customer – sqFt sq ft", or a generic stamp if the
+// customer is also blank.
+function displayName(meta: ProjectMeta, inputs: ProjectInputs): string {
+  const name = meta.projectName.trim();
+  if (name) return name;
+  const customer = meta.customerName.trim();
+  if (customer) {
+    return `${customer} – ${inputs.sqFt?.toLocaleString() ?? "?"} sq ft`;
+  }
+  return "Untitled estimate";
 }
 
 export default function Page() {
@@ -84,20 +140,31 @@ export default function Page() {
   const [showCosts, setShowCosts] = useState(false);
   // Saved projects, persisted to localStorage.
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
-  // Current project's display name. Populated when a saved project is
-  // loaded, when the user saves, or by typing in the Estimate Summary
-  // card. Used in copy / PDF export.
-  const [projectName, setProjectName] = useState("");
+  // Project / customer metadata. Populated when a saved project is
+  // loaded or by typing in the Project Info card. Used in copy / PDF.
+  const [projectMeta, setProjectMeta] = useState<ProjectMeta>(DEFAULT_META);
+  // Saved-projects search filter — matches displayName or city.
+  const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const setMetaField = <K extends keyof ProjectMeta>(
+    key: K,
+    value: ProjectMeta[K],
+  ) => setProjectMeta((prev) => ({ ...prev, [key]: value }));
+
   // Load saved projects on mount. SSR-safe: runs only in the browser.
+  // Each row is run through migrateSavedProject so older shapes (with
+  // a top-level `name` field) keep working after this update.
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(PROJECTS_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as SavedProject[];
-        if (Array.isArray(parsed)) setSavedProjects(parsed);
-      }
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const migrated = parsed
+        .map(migrateSavedProject)
+        .filter((p): p is SavedProject => p !== null);
+      setSavedProjects(migrated);
     } catch {
       /* ignore */
     }
@@ -216,32 +283,27 @@ export default function Page() {
   };
 
   // ── Saved-project actions ────────────────────────────────────
+  // No prompt — user has already typed metadata in the Project Info
+  // card. Auto-name kicks in on display when projectName is blank.
   const saveProject = () => {
-    const name = window.prompt(
-      "Project name?",
-      projectName || "Untitled project",
-    );
-    if (!name) return;
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    setProjectName(trimmed);
+    if (!costs) return;
     const project: SavedProject = {
       id: newProjectId(),
-      name: trimmed,
+      meta: projectMeta,
       inputs,
       pricing,
-      finalPrice: costs?.jobPricing.finalPrice ?? null,
+      finalPrice: costs.jobPricing.finalPrice,
       timestamp: Date.now(),
     };
     persistProjects([project, ...savedProjects]);
   };
 
   const loadProject = (p: SavedProject) => {
-    // Restore inputs, pricing, and name. Confirmed=true so the result
-    // card renders immediately (the user explicitly chose this project).
+    // Restore inputs, pricing, and metadata. Confirmed=true so the
+    // result card renders immediately.
     setInputs(p.inputs);
     setPricing(p.pricing);
-    setProjectName(p.name);
+    setProjectMeta(p.meta);
     setConfirmed(true);
   };
 
@@ -249,7 +311,12 @@ export default function Page() {
     const copy: SavedProject = {
       ...p,
       id: newProjectId(),
-      name: `${p.name} (copy)`,
+      meta: {
+        ...p.meta,
+        projectName: p.meta.projectName
+          ? `${p.meta.projectName} (copy)`
+          : "",
+      },
       timestamp: Date.now(),
     };
     persistProjects([copy, ...savedProjects]);
@@ -263,8 +330,20 @@ export default function Page() {
   // ── Export actions ───────────────────────────────────────────
   const copyEstimate = async () => {
     if (!costs) return;
-    const lines = [
-      projectName.trim() || "Painting Estimate",
+    const lines: string[] = [
+      displayName(projectMeta, inputs),
+    ];
+    if (projectMeta.customerName.trim()) {
+      lines.push(`Customer:       ${projectMeta.customerName}`);
+    }
+    const cityLine = [projectMeta.address, projectMeta.city]
+      .filter((s) => s.trim())
+      .join(", ");
+    if (cityLine) lines.push(`Address:        ${cityLine}`);
+    if (projectMeta.phone.trim()) {
+      lines.push(`Phone:          ${projectMeta.phone}`);
+    }
+    lines.push(
       "",
       `Sq Ft:          ${inputs.sqFt?.toLocaleString() ?? "—"}`,
       `Wall Height:    ${inputs.wallHeight ?? "—"} ft`,
@@ -272,7 +351,7 @@ export default function Page() {
       `Material Cost:  ${fmtMoney(costs.jobPricing.materials)}`,
       `Labor Cost:     ${fmtMoney(costs.jobPricing.labor)}`,
       `Final Price:    ${fmtMoney(costs.jobPricing.finalPrice)}`,
-    ];
+    );
     const text = lines.join("\n");
     try {
       await navigator.clipboard.writeText(text);
@@ -346,6 +425,8 @@ export default function Page() {
       {savedProjects.length > 0 && (
         <SavedProjectsCard
           projects={savedProjects}
+          search={search}
+          onSearchChange={setSearch}
           onLoad={loadProject}
           onDuplicate={duplicateProject}
           onDelete={deleteProject}
@@ -373,6 +454,10 @@ export default function Page() {
         analyze={analyze}
         clear={clearAi}
       />
+
+      <div className="mt-6">
+        <ProjectInfoCard meta={projectMeta} setMetaField={setMetaField} />
+      </div>
 
       {/* Step 2 — Project inputs (auto-filled by AI or typed manually) */}
       <div className="mt-6">
@@ -408,8 +493,7 @@ export default function Page() {
         onToggleLabor={() => setShowLabor((v) => !v)}
         showCosts={showCosts}
         onToggleCosts={() => setShowCosts((v) => !v)}
-        projectName={projectName}
-        onProjectNameChange={setProjectName}
+        projectMeta={projectMeta}
         onCopyEstimate={copyEstimate}
         onDownloadPdf={downloadPdf}
       />
@@ -715,8 +799,7 @@ function ResultArea({
   onToggleLabor,
   showCosts,
   onToggleCosts,
-  projectName,
-  onProjectNameChange,
+  projectMeta,
   onCopyEstimate,
   onDownloadPdf,
 }: {
@@ -750,8 +833,7 @@ function ResultArea({
   onToggleLabor: () => void;
   showCosts: boolean;
   onToggleCosts: () => void;
-  projectName: string;
-  onProjectNameChange: (name: string) => void;
+  projectMeta: ProjectMeta;
   onCopyEstimate: () => void;
   onDownloadPdf: () => void;
 }) {
@@ -1024,8 +1106,7 @@ function ResultArea({
 
       {costs && (
         <EstimateSummaryCard
-          projectName={projectName}
-          onProjectNameChange={onProjectNameChange}
+          projectMeta={projectMeta}
           inputs={inputs}
           costs={costs}
           onCopy={onCopyEstimate}
@@ -1643,20 +1724,23 @@ function Card({
 // captures only this card. Copy / Download PDF buttons are .no-print
 // so they don't appear in the exported view.
 function EstimateSummaryCard({
-  projectName,
-  onProjectNameChange,
+  projectMeta,
   inputs,
   costs,
   onCopy,
   onDownloadPdf,
 }: {
-  projectName: string;
-  onProjectNameChange: (name: string) => void;
+  projectMeta: ProjectMeta;
   inputs: ProjectInputs;
   costs: NonNullable<ReturnType<typeof computeCosts>>;
   onCopy: () => void;
   onDownloadPdf: () => void;
 }) {
+  const name = displayName(projectMeta, inputs);
+  const cityLine = [projectMeta.address, projectMeta.city]
+    .filter((s) => s.trim())
+    .join(", ");
+
   return (
     <div className="printable rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
       <header className="mb-4 flex items-center justify-between gap-3">
@@ -1681,26 +1765,33 @@ function EstimateSummaryCard({
         </div>
       </header>
 
-      <label className="no-print mb-4 block">
-        <span className="mb-1 block text-[10px] uppercase tracking-wide text-zinc-500">
-          Project Name
-        </span>
-        <input
-          type="text"
-          value={projectName}
-          onChange={(e) => onProjectNameChange(e.target.value)}
-          placeholder="Untitled project"
-          className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
-        />
-      </label>
-
       <div className="space-y-2 text-sm">
         <div className="flex justify-between border-b border-zinc-800 pb-2">
           <span className="text-zinc-400">Project</span>
-          <span className="font-medium text-zinc-100">
-            {projectName.trim() || "Untitled project"}
-          </span>
+          <span className="font-medium text-zinc-100">{name}</span>
         </div>
+        {projectMeta.customerName.trim() && (
+          <div className="flex justify-between">
+            <span className="text-zinc-400">Customer</span>
+            <span className="font-medium text-zinc-100">
+              {projectMeta.customerName}
+            </span>
+          </div>
+        )}
+        {cityLine && (
+          <div className="flex justify-between">
+            <span className="text-zinc-400">Address</span>
+            <span className="font-medium text-zinc-100">{cityLine}</span>
+          </div>
+        )}
+        {projectMeta.phone.trim() && (
+          <div className="flex justify-between">
+            <span className="text-zinc-400">Phone</span>
+            <span className="font-medium text-zinc-100">
+              {projectMeta.phone}
+            </span>
+          </div>
+        )}
         <div className="flex justify-between">
           <span className="text-zinc-400">Sq Ft</span>
           <span className="font-medium text-zinc-100">
@@ -1738,64 +1829,189 @@ function EstimateSummaryCard({
   );
 }
 
-// Saved projects list. One row per saved project with load /
-// duplicate / delete actions. Self-hides when the list is empty.
+// Customer / project context. Drives the saved-project metadata,
+// the Estimate Summary export, and the auto-name fallback. Doesn't
+// affect calculations.
+function ProjectInfoCard({
+  meta,
+  setMetaField,
+}: {
+  meta: ProjectMeta;
+  setMetaField: <K extends keyof ProjectMeta>(
+    key: K,
+    value: ProjectMeta[K],
+  ) => void;
+}) {
+  return (
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-400">
+        Project Info
+      </h2>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <TextField
+          label="Customer Name"
+          value={meta.customerName}
+          onChange={(v) => setMetaField("customerName", v)}
+          placeholder="e.g. Smith Family"
+        />
+        <TextField
+          label="Project Name"
+          value={meta.projectName}
+          onChange={(v) => setMetaField("projectName", v)}
+          placeholder="auto-named if blank"
+        />
+        <TextField
+          label="Address"
+          value={meta.address}
+          onChange={(v) => setMetaField("address", v)}
+          placeholder="123 Main St"
+          colSpan2
+        />
+        <TextField
+          label="City"
+          value={meta.city}
+          onChange={(v) => setMetaField("city", v)}
+          placeholder="Salt Lake City"
+        />
+        <TextField
+          label="Phone (optional)"
+          value={meta.phone}
+          onChange={(v) => setMetaField("phone", v)}
+          placeholder="(555) 555-5555"
+        />
+      </div>
+    </section>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  colSpan2,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  colSpan2?: boolean;
+}) {
+  return (
+    <label className={`block ${colSpan2 ? "sm:col-span-2" : ""}`}>
+      <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+        {label}
+      </span>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+      />
+    </label>
+  );
+}
+
+// Saved projects list with search. One row per project shows
+// customer + display name + city + final price.
 function SavedProjectsCard({
   projects,
+  search,
+  onSearchChange,
   onLoad,
   onDuplicate,
   onDelete,
 }: {
   projects: SavedProject[];
+  search: string;
+  onSearchChange: (v: string) => void;
   onLoad: (p: SavedProject) => void;
   onDuplicate: (p: SavedProject) => void;
   onDelete: (id: string) => void;
 }) {
+  const filtered = useMemoFilter(projects, search);
+
   return (
     <section className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
-      <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-400">
-        Saved Projects ({projects.length})
-      </h2>
-      <ul className="divide-y divide-zinc-800">
-        {projects.map((p) => (
-          <li
-            key={p.id}
-            className="flex items-center justify-between gap-3 py-2"
-          >
-            <button
-              type="button"
-              onClick={() => onLoad(p)}
-              className="flex-1 truncate text-left transition hover:text-amber-300"
-            >
-              <div className="truncate text-sm font-medium text-zinc-100">
-                {p.name}
-              </div>
-              <div className="text-xs text-zinc-500">
-                {p.finalPrice !== null
-                  ? fmtMoney(p.finalPrice)
-                  : "no price"}{" "}
-                · {new Date(p.timestamp).toLocaleDateString()}
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => onDuplicate(p)}
-              className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
-            >
-              Duplicate
-            </button>
-            <button
-              type="button"
-              onClick={() => onDelete(p.id)}
-              className="rounded-md border border-zinc-800 px-2.5 py-1 text-xs text-zinc-400 hover:border-red-500/60 hover:text-red-400"
-            >
-              Delete
-            </button>
-          </li>
-        ))}
-      </ul>
+      <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
+          Saved Projects ({filtered.length}
+          {filtered.length !== projects.length && ` of ${projects.length}`})
+        </h2>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="Search by name or city…"
+          className="w-56 max-w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-100 outline-none transition focus:border-amber-500"
+        />
+      </header>
+
+      {filtered.length === 0 ? (
+        <p className="text-xs text-zinc-500">No matching projects.</p>
+      ) : (
+        <ul className="divide-y divide-zinc-800">
+          {filtered.map((p) => {
+            const name = displayName(p.meta, p.inputs);
+            const customer = p.meta.customerName.trim() || "—";
+            const city = p.meta.city.trim() || "—";
+            return (
+              <li
+                key={p.id}
+                className="flex items-center justify-between gap-3 py-2"
+              >
+                <button
+                  type="button"
+                  onClick={() => onLoad(p)}
+                  className="flex-1 truncate text-left transition hover:text-amber-300"
+                >
+                  <div className="truncate text-sm font-medium text-zinc-100">
+                    {customer === "—" ? name : `${customer} · ${name}`}
+                  </div>
+                  <div className="text-xs text-zinc-500">
+                    {city} ·{" "}
+                    {p.finalPrice !== null
+                      ? fmtMoney(p.finalPrice)
+                      : "no price"}{" "}
+                    · {new Date(p.timestamp).toLocaleDateString()}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDuplicate(p)}
+                  className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
+                >
+                  Duplicate
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDelete(p.id)}
+                  className="rounded-md border border-zinc-800 px-2.5 py-1 text-xs text-zinc-400 hover:border-red-500/60 hover:text-red-400"
+                >
+                  Delete
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
+}
+
+// Filter saved projects by displayName or city, case-insensitive.
+function useMemoFilter(projects: SavedProject[], search: string) {
+  return useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => {
+      const name = displayName(p.meta, p.inputs).toLowerCase();
+      const city = p.meta.city.toLowerCase();
+      const customer = p.meta.customerName.toLowerCase();
+      return name.includes(q) || city.includes(q) || customer.includes(q);
+    });
+  }, [projects, search]);
 }
 
 // Same shell as Card, but the title bar is a click-toggle and the
