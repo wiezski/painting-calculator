@@ -20,3 +20,29 @@ html, body {
 body {
   font-feature-settings: "rlig" 1, "calt" 1;
 }
+
+/* Print rules: when the user picks "Download PDF" we trigger
+   window.print(); everything except elements marked .printable is
+   hidden. Anything marked .no-print (the Copy / Download buttons,
+   for example) is also hidden. */
+@media print {
+  html, body {
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+  body * { visibility: hidden; }
+  .printable, .printable * { visibility: visible; }
+  .printable {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 24px;
+    background: #ffffff !important;
+    color: #111111 !important;
+    border: none !important;
+  }
+  .printable .printable-title {
+    color: #111111 !important;
+  }
+  .no-print { display: none !important; }
+}

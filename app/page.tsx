@@ -84,6 +84,10 @@ export default function Page() {
   const [showCosts, setShowCosts] = useState(false);
   // Saved projects, persisted to localStorage.
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
+  // Current project's display name. Populated when a saved project is
+  // loaded, when the user saves, or by typing in the Estimate Summary
+  // card. Used in copy / PDF export.
+  const [projectName, setProjectName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Load saved projects on mount. SSR-safe: runs only in the browser.
@@ -213,10 +217,14 @@ export default function Page() {
 
   // ── Saved-project actions ────────────────────────────────────
   const saveProject = () => {
-    const name = window.prompt("Project name?", "Untitled project");
+    const name = window.prompt(
+      "Project name?",
+      projectName || "Untitled project",
+    );
     if (!name) return;
     const trimmed = name.trim();
     if (!trimmed) return;
+    setProjectName(trimmed);
     const project: SavedProject = {
       id: newProjectId(),
       name: trimmed,
@@ -229,10 +237,11 @@ export default function Page() {
   };
 
   const loadProject = (p: SavedProject) => {
-    // Restore inputs and pricing. Confirmed=true so the result card
-    // renders immediately (the user explicitly chose this project).
+    // Restore inputs, pricing, and name. Confirmed=true so the result
+    // card renders immediately (the user explicitly chose this project).
     setInputs(p.inputs);
     setPricing(p.pricing);
+    setProjectName(p.name);
     setConfirmed(true);
   };
 
@@ -249,6 +258,46 @@ export default function Page() {
   const deleteProject = (id: string) => {
     if (!window.confirm("Delete this project?")) return;
     persistProjects(savedProjects.filter((p) => p.id !== id));
+  };
+
+  // ── Export actions ───────────────────────────────────────────
+  const copyEstimate = async () => {
+    if (!costs) return;
+    const lines = [
+      projectName.trim() || "Painting Estimate",
+      "",
+      `Sq Ft:          ${inputs.sqFt?.toLocaleString() ?? "—"}`,
+      `Wall Height:    ${inputs.wallHeight ?? "—"} ft`,
+      "",
+      `Material Cost:  ${fmtMoney(costs.jobPricing.materials)}`,
+      `Labor Cost:     ${fmtMoney(costs.jobPricing.labor)}`,
+      `Final Price:    ${fmtMoney(costs.jobPricing.finalPrice)}`,
+    ];
+    const text = lines.join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API may be blocked in some contexts; fall back to
+      // a temporary textarea + execCommand. Either way silently noop
+      // on failure rather than crashing.
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const downloadPdf = () => {
+    if (!costs) return;
+    // Browser print → save as PDF. The print stylesheet hides
+    // everything except the .printable summary card.
+    window.print();
   };
   // Note: editing an input does NOT auto-reset `confirmed`. The user
   // has already chosen to see numbers; tweaking values just updates
@@ -359,6 +408,10 @@ export default function Page() {
         onToggleLabor={() => setShowLabor((v) => !v)}
         showCosts={showCosts}
         onToggleCosts={() => setShowCosts((v) => !v)}
+        projectName={projectName}
+        onProjectNameChange={setProjectName}
+        onCopyEstimate={copyEstimate}
+        onDownloadPdf={downloadPdf}
       />
 
       <footer className="mt-12 text-xs text-zinc-600">
@@ -662,6 +715,10 @@ function ResultArea({
   onToggleLabor,
   showCosts,
   onToggleCosts,
+  projectName,
+  onProjectNameChange,
+  onCopyEstimate,
+  onDownloadPdf,
 }: {
   result: ReturnType<typeof calculateEstimate>;
   inputs: ProjectInputs;
@@ -693,6 +750,10 @@ function ResultArea({
   onToggleLabor: () => void;
   showCosts: boolean;
   onToggleCosts: () => void;
+  projectName: string;
+  onProjectNameChange: (name: string) => void;
+  onCopyEstimate: () => void;
+  onDownloadPdf: () => void;
 }) {
   const isDetailed = mode === "detailed";
   // Step 3a — not confirmed yet: show the gate.
@@ -959,6 +1020,17 @@ function ResultArea({
             />
           </Grid>
         </Card>
+      )}
+
+      {costs && (
+        <EstimateSummaryCard
+          projectName={projectName}
+          onProjectNameChange={onProjectNameChange}
+          inputs={inputs}
+          costs={costs}
+          onCopy={onCopyEstimate}
+          onDownloadPdf={onDownloadPdf}
+        />
       )}
     </section>
   );
@@ -1563,6 +1635,105 @@ function Card({
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+// Clean export-ready summary. Tagged .printable so window.print()
+// captures only this card. Copy / Download PDF buttons are .no-print
+// so they don't appear in the exported view.
+function EstimateSummaryCard({
+  projectName,
+  onProjectNameChange,
+  inputs,
+  costs,
+  onCopy,
+  onDownloadPdf,
+}: {
+  projectName: string;
+  onProjectNameChange: (name: string) => void;
+  inputs: ProjectInputs;
+  costs: NonNullable<ReturnType<typeof computeCosts>>;
+  onCopy: () => void;
+  onDownloadPdf: () => void;
+}) {
+  return (
+    <div className="printable rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <header className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="printable-title text-sm font-medium uppercase tracking-wide text-zinc-400">
+          Estimate Summary
+        </h3>
+        <div className="no-print flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onCopy}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+          >
+            Copy Estimate
+          </button>
+          <button
+            type="button"
+            onClick={onDownloadPdf}
+            className="rounded-md bg-amber-500 px-3 py-1.5 text-xs font-medium text-black hover:bg-amber-400"
+          >
+            Download PDF
+          </button>
+        </div>
+      </header>
+
+      <label className="no-print mb-4 block">
+        <span className="mb-1 block text-[10px] uppercase tracking-wide text-zinc-500">
+          Project Name
+        </span>
+        <input
+          type="text"
+          value={projectName}
+          onChange={(e) => onProjectNameChange(e.target.value)}
+          placeholder="Untitled project"
+          className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+        />
+      </label>
+
+      <div className="space-y-2 text-sm">
+        <div className="flex justify-between border-b border-zinc-800 pb-2">
+          <span className="text-zinc-400">Project</span>
+          <span className="font-medium text-zinc-100">
+            {projectName.trim() || "Untitled project"}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-400">Sq Ft</span>
+          <span className="font-medium text-zinc-100">
+            {inputs.sqFt?.toLocaleString() ?? "—"}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-400">Wall Height</span>
+          <span className="font-medium text-zinc-100">
+            {inputs.wallHeight !== null ? `${inputs.wallHeight} ft` : "—"}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-400">Material Cost</span>
+          <span className="font-medium text-zinc-100">
+            {fmtMoney(costs.jobPricing.materials)}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-400">Labor Cost</span>
+          <span className="font-medium text-zinc-100">
+            {fmtMoney(costs.jobPricing.labor)}
+          </span>
+        </div>
+        <div className="mt-2 flex justify-between border-t border-zinc-800 pt-3">
+          <span className="text-base font-semibold text-zinc-200">
+            Final Price
+          </span>
+          <span className="text-base font-bold text-amber-400">
+            {fmtMoney(costs.jobPricing.finalPrice)}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
