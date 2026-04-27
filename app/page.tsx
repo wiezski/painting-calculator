@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_INPUTS,
   calculateEstimate,
@@ -24,6 +24,22 @@ type AiState =
   | { status: "uploading" }
   | { status: "ready" }
   | { status: "error"; message: string };
+
+// Persisted projects in localStorage.
+interface SavedProject {
+  id: string;
+  name: string;
+  inputs: ProjectInputs;
+  pricing: StorePricingMap;
+  finalPrice: number | null;
+  timestamp: number;
+}
+
+const PROJECTS_STORAGE_KEY = "painting-calculator-projects-v1";
+
+function newProjectId(): string {
+  return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export default function Page() {
   // ── State 1 of 2 ──────────────────────────────────────────────
@@ -66,7 +82,34 @@ export default function Page() {
   const [showMaterials, setShowMaterials] = useState(false);
   const [showLabor, setShowLabor] = useState(false);
   const [showCosts, setShowCosts] = useState(false);
+  // Saved projects, persisted to localStorage.
+  const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Load saved projects on mount. SSR-safe: runs only in the browser.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(PROJECTS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as SavedProject[];
+        if (Array.isArray(parsed)) setSavedProjects(parsed);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const persistProjects = (next: SavedProject[]) => {
+    setSavedProjects(next);
+    try {
+      window.localStorage.setItem(
+        PROJECTS_STORAGE_KEY,
+        JSON.stringify(next),
+      );
+    } catch {
+      /* quota / private mode — silently ignore */
+    }
+  };
 
   // Reactive result, gated on confirm + valid inputs (sqFt, wallHeight,
   // doors, windows all required). Editing any field after confirming
@@ -167,6 +210,46 @@ export default function Page() {
     setAiSuggestions(null);
     if (inputRef.current) inputRef.current.value = "";
   };
+
+  // ── Saved-project actions ────────────────────────────────────
+  const saveProject = () => {
+    const name = window.prompt("Project name?", "Untitled project");
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const project: SavedProject = {
+      id: newProjectId(),
+      name: trimmed,
+      inputs,
+      pricing,
+      finalPrice: costs?.jobPricing.finalPrice ?? null,
+      timestamp: Date.now(),
+    };
+    persistProjects([project, ...savedProjects]);
+  };
+
+  const loadProject = (p: SavedProject) => {
+    // Restore inputs and pricing. Confirmed=true so the result card
+    // renders immediately (the user explicitly chose this project).
+    setInputs(p.inputs);
+    setPricing(p.pricing);
+    setConfirmed(true);
+  };
+
+  const duplicateProject = (p: SavedProject) => {
+    const copy: SavedProject = {
+      ...p,
+      id: newProjectId(),
+      name: `${p.name} (copy)`,
+      timestamp: Date.now(),
+    };
+    persistProjects([copy, ...savedProjects]);
+  };
+
+  const deleteProject = (id: string) => {
+    if (!window.confirm("Delete this project?")) return;
+    persistProjects(savedProjects.filter((p) => p.id !== id));
+  };
   // Note: editing an input does NOT auto-reset `confirmed`. The user
   // has already chosen to see numbers; tweaking values just updates
   // the result via useMemo. `confirmed` only resets when AI auto-fills.
@@ -183,23 +266,42 @@ export default function Page() {
             {costs ? fmtMoney(costs.jobPricing.finalPrice) : "—"}
           </div>
         </div>
-        <div className="inline-flex rounded-md border border-zinc-700 p-0.5 text-xs">
-          {(["quick", "detailed"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMode(m)}
-              className={`rounded-[0.3rem] px-3 py-1.5 font-medium transition ${
-                mode === m
-                  ? "bg-amber-500 text-black"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {m === "quick" ? "Quick Estimate" : "Detailed Mode"}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={saveProject}
+            disabled={!costs}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Save Estimate
+          </button>
+          <div className="inline-flex rounded-md border border-zinc-700 p-0.5 text-xs">
+            {(["quick", "detailed"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                className={`rounded-[0.3rem] px-3 py-1.5 font-medium transition ${
+                  mode === m
+                    ? "bg-amber-500 text-black"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {m === "quick" ? "Quick Estimate" : "Detailed Mode"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+
+      {savedProjects.length > 0 && (
+        <SavedProjectsCard
+          projects={savedProjects}
+          onLoad={loadProject}
+          onDuplicate={duplicateProject}
+          onDelete={deleteProject}
+        />
+      )}
 
       <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight">
@@ -1462,6 +1564,66 @@ function Card({
       </h3>
       {children}
     </div>
+  );
+}
+
+// Saved projects list. One row per saved project with load /
+// duplicate / delete actions. Self-hides when the list is empty.
+function SavedProjectsCard({
+  projects,
+  onLoad,
+  onDuplicate,
+  onDelete,
+}: {
+  projects: SavedProject[];
+  onLoad: (p: SavedProject) => void;
+  onDuplicate: (p: SavedProject) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <section className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-400">
+        Saved Projects ({projects.length})
+      </h2>
+      <ul className="divide-y divide-zinc-800">
+        {projects.map((p) => (
+          <li
+            key={p.id}
+            className="flex items-center justify-between gap-3 py-2"
+          >
+            <button
+              type="button"
+              onClick={() => onLoad(p)}
+              className="flex-1 truncate text-left transition hover:text-amber-300"
+            >
+              <div className="truncate text-sm font-medium text-zinc-100">
+                {p.name}
+              </div>
+              <div className="text-xs text-zinc-500">
+                {p.finalPrice !== null
+                  ? fmtMoney(p.finalPrice)
+                  : "no price"}{" "}
+                · {new Date(p.timestamp).toLocaleDateString()}
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => onDuplicate(p)}
+              className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
+            >
+              Duplicate
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete(p.id)}
+              className="rounded-md border border-zinc-800 px-2.5 py-1 text-xs text-zinc-400 hover:border-red-500/60 hover:text-red-400"
+            >
+              Delete
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
