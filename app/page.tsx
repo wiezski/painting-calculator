@@ -795,6 +795,7 @@ export default function Page() {
         <MaterialsTab
           pricing={pricing}
           updatePriceEntry={updatePriceEntry}
+          defaultZip={inputs.zipCode}
         />
       )}
     </main>
@@ -1800,7 +1801,16 @@ function StoreComparison({
 }
 
 function fmtMoney(n: number): string {
-  return `$${Math.round(n).toLocaleString()}`;
+  // Preserve cents when the amount has a fractional part — e.g. real
+  // retail prices ($7.99). Whole-dollar amounts stay clean ($45).
+  const rounded = Math.round(n * 100) / 100;
+  if (rounded === Math.trunc(rounded)) {
+    return `$${rounded.toLocaleString()}`;
+  }
+  return `$${rounded.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 /* ---------- AI suggest panel ---------- */
@@ -2258,6 +2268,7 @@ interface MaterialResult {
 function MaterialsTab({
   pricing,
   updatePriceEntry,
+  defaultZip,
 }: {
   pricing: StorePricingMap;
   updatePriceEntry: (
@@ -2266,11 +2277,22 @@ function MaterialsTab({
     key: string,
     patch: Partial<PriceEntry>,
   ) => void;
+  defaultZip: string;
 }) {
   const materialNames = Object.keys(
     DEFAULT_STORE_PRICING["home-depot"].materials,
   );
   const [description, setDescription] = useState<string>("");
+  // Local ZIP for the materials search. Pre-filled from project ZIP
+  // but editable so the user can shop a specific area without changing
+  // the project's regional multiplier ZIP.
+  const [zip, setZip] = useState<string>(defaultZip ?? "");
+  // If the project's ZIP changes after this tab mounts, sync — but
+  // only when the user hasn't typed a custom value yet.
+  useEffect(() => {
+    if (zip === "" && defaultZip) setZip(defaultZip);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultZip]);
   const [phase, setPhase] = useState<
     "idle" | "finding" | "fetching" | "done"
   >("idle");
@@ -2313,6 +2335,8 @@ function MaterialsTab({
           stores: FIND_STORES,
           // Let Claude pick which existing line item this maps to.
           materialOptions: materialNames,
+          // ZIP nudges the model toward local pricing.
+          zipCode: zip.trim(),
         }),
       });
       const json = await res.json();
@@ -2466,7 +2490,7 @@ function MaterialsTab({
         right line item. Manual override remains in the Pricing tab.
       </p>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_140px_auto]">
         <label className="block">
           <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
             Description
@@ -2488,6 +2512,22 @@ function MaterialsTab({
             className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
           />
         </label>
+        <label className="block">
+          <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+            ZIP <span className="text-zinc-600">(optional)</span>
+          </span>
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={10}
+            value={zip}
+            onChange={(e) =>
+              setZip(e.target.value.replace(/[^\d-]/g, ""))
+            }
+            placeholder="84101"
+            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+          />
+        </label>
         <button
           type="button"
           onClick={findAcross}
@@ -2501,6 +2541,12 @@ function MaterialsTab({
           {buttonLabel}
         </button>
       </div>
+      {zip && /^\d{5}/.test(zip) && (
+        <p className="mt-2 text-[11px] text-zinc-500">
+          Searching with local pricing near ZIP{" "}
+          <span className="text-zinc-300">{zip.slice(0, 5)}</span>.
+        </p>
+      )}
 
       {matchedTarget && (
         <p className="mt-3 text-xs text-zinc-400">

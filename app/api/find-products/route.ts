@@ -54,6 +54,11 @@ export async function POST(req: NextRequest) {
   const stores = (body as { stores?: unknown }).stores;
   const materialOptions = (body as { materialOptions?: unknown })
     .materialOptions;
+  const zipCode = (body as { zipCode?: unknown }).zipCode;
+  const zip =
+    typeof zipCode === "string" && /^\d{5}/.test(zipCode.trim())
+      ? zipCode.trim().slice(0, 5)
+      : null;
 
   if (typeof description !== "string" || description.trim().length < 2) {
     return NextResponse.json(
@@ -112,8 +117,12 @@ For each store:
 - Pick the most relevant single product (consumer-grade, common pack size).
 - Return the direct product page URL — not a search results page or category page.
 - Return a short product name as displayed on the page.
-- Return the current listed price as a plain number in USD (e.g. 5.99). Use only the main product price — NOT shipping ("$5.99 shipping"), promotional savings ("Save $20"), original-before-discount prices, or per-roll prices when the listing is multi-roll. If multiple sizes are shown, return the price for the size most relevant to the description.
-- For Lowe's specifically: prices are usually in the page HTML even before clicking "see in cart". If your first search snippet doesn't include a price, run a second web_search with the product name to land on the actual product page and read it from there. If the page genuinely shows no price (rare), return null.
+- Return the current listed price as a plain number in USD with cents preserved (e.g. 5.99 — NOT 5 or 6). Use only the main product price — NOT shipping ("$5.99 shipping"), promotional savings ("Save $20"), original-before-discount prices, or per-roll prices when the listing is multi-roll. If multiple sizes are shown, return the price for the size most relevant to the description.
+- For Lowe's specifically: prices are usually in the page HTML even before clicking "see in cart". If your first search snippet doesn't include a price, run a second web_search with the product name to land on the actual product page and read it from there. If the page genuinely shows no price (rare), return null.${
+    zip
+      ? `\n- Prefer prices that reflect the local store near ZIP ${zip}. If a retailer shows store-specific pricing, prefer the price set for that ZIP. Append the ZIP to your search queries when relevant (e.g. "${description.trim()} ${zip}" or use the retailer's store-finder).`
+      : ""
+  }
 - If you cannot find a clear product page on that retailer, set url, productName, and price to null.
 - If you can find the page but the price isn't visible after a second look, return url and productName but set price to null.${matchBlock}
 
