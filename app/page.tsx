@@ -165,6 +165,9 @@ export default function Page() {
   const [fetchState, setFetchState] = useState<
     Record<string, { loading?: boolean; error?: string }>
   >({});
+  // Top-level tab navigation.
+  type Tab = "estimate" | "pricing" | "materials" | "projects";
+  const [activeTab, setActiveTab] = useState<Tab>("estimate");
   // UX: Quick / Detailed mode toggle. Quick hides extra detail
   // sections to keep the screen lean for fast bidding.
   const [mode, setMode] = useState<"quick" | "detailed">("quick");
@@ -652,7 +655,35 @@ export default function Page() {
         </div>
       </div>
 
-      {savedProjects.length > 0 && (
+      {/* Top-level tabs */}
+      <div className="mb-4 flex gap-1 border-b border-zinc-800 text-xs font-medium">
+        {(
+          [
+            ["estimate", "Estimate"],
+            ["pricing", "Pricing"],
+            ["materials", "Materials"],
+            ["projects", "Projects"],
+          ] as const
+        ).map(([id, label]) => {
+          const active = activeTab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setActiveTab(id)}
+              className={`-mb-px border-b-2 px-3 py-2 transition ${
+                active
+                  ? "border-amber-500 text-amber-300"
+                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "projects" && (
         <SavedProjectsCard
           projects={savedProjects}
           search={search}
@@ -663,6 +694,8 @@ export default function Page() {
         />
       )}
 
+      {activeTab === "estimate" && (
+      <>
       <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight">
           Painting Calculator
@@ -739,6 +772,31 @@ export default function Page() {
         Walls = sq ft × multiplier (default 2.6). Two coats. 10% waste. Always
         sanity-check before ordering.
       </footer>
+      </>
+      )}
+
+      {activeTab === "pricing" && (
+        <PricingSettingsCard
+          pricing={pricing}
+          updatePriceEntry={updatePriceEntry}
+          fetchPriceFor={fetchPriceFor}
+          fetchState={fetchState}
+          refreshAllPrices={refreshAllPrices}
+          refreshing={refreshing}
+          expanded={true}
+          onToggle={() => {}}
+          activeTab={pricingTab}
+          onTabChange={setPricingTab}
+          locationInfo={locationInfo}
+        />
+      )}
+
+      {activeTab === "materials" && (
+        <MaterialsTab
+          pricing={pricing}
+          updatePriceEntry={updatePriceEntry}
+        />
+      )}
     </main>
   );
 }
@@ -1191,21 +1249,7 @@ function ResultArea({
         </CollapsibleCard>
       )}
 
-      {isDetailed && (
-        <PricingSettingsCard
-          pricing={pricing}
-          updatePriceEntry={updatePriceEntry}
-          fetchPriceFor={fetchPriceFor}
-          fetchState={fetchState}
-          refreshAllPrices={refreshAllPrices}
-          refreshing={refreshing}
-          expanded={showPricingSettings}
-          onToggle={onTogglePricingSettings}
-          activeTab={pricingTab}
-          onTabChange={onPricingTabChange}
-          locationInfo={locationInfo}
-        />
-      )}
+      {/* Pricing Settings now lives on its own Pricing tab, not here. */}
 
       {costs && isDetailed && (
         <CollapsibleCard
@@ -2141,6 +2185,441 @@ function EstimateSummaryCard({
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Materials sourcing ────────────────────────────────────────
+// One-shot product finder. User types a description, picks which
+// pricing item it should populate, clicks "Find Prices Across Stores".
+// The flow runs:
+//   1. POST /api/find-products  → URLs per store (HD + Lowe's)
+//   2. POST /api/fetch-price    → real price for each URL
+//   3. updatePriceEntry         → write URL + price + lastUpdated
+// The results table shows per-store status with flag warnings.
+
+const FIND_STORES: Store[] = ["home-depot", "lowes"];
+
+// Default seed prices used for the "is this price out of whack?" check.
+function defaultPriceFor(
+  storeId: Store,
+  section: "paint" | "materials",
+  key: string,
+): number {
+  const def = DEFAULT_STORE_PRICING[storeId];
+  if (section === "paint") {
+    return def.paint[key as keyof StorePricing["paint"]].price;
+  }
+  return def.materials[key]?.price ?? 0;
+}
+
+// Returns a flag reason if the price looks suspicious. null means OK.
+function flagPrice(
+  fetchedPrice: number,
+  defaultPrice: number,
+  previousPrice: number | null,
+  section: "paint" | "materials",
+): string | null {
+  // Sanity ranges (broad).
+  const sanity =
+    section === "paint"
+      ? { min: 10, max: 250 }
+      : { min: 0.5, max: 200 };
+  if (fetchedPrice < sanity.min || fetchedPrice > sanity.max) {
+    return `outside expected range ($${sanity.min}-$${sanity.max})`;
+  }
+  // Vs default seed.
+  if (defaultPrice > 0) {
+    const ratio = fetchedPrice / defaultPrice;
+    if (ratio < 0.25 || ratio > 4) {
+      return `${ratio < 1 ? "much lower" : "much higher"} than default ($${defaultPrice})`;
+    }
+  }
+  // Vs previous price (only if there was one).
+  if (previousPrice !== null && previousPrice > 0) {
+    const change = Math.abs(fetchedPrice - previousPrice) / previousPrice;
+    if (change > 0.5) {
+      return `changed >50% from previous ($${previousPrice})`;
+    }
+  }
+  return null;
+}
+
+interface MaterialResult {
+  store: Store;
+  productName: string | null;
+  url: string | null;
+  price: number | null;
+  previousPrice: number | null;
+  flagReason: string | null;
+  status: "idle" | "finding" | "fetching" | "ok" | "error";
+  errorMessage?: string;
+}
+
+function MaterialsTab({
+  pricing,
+  updatePriceEntry,
+}: {
+  pricing: StorePricingMap;
+  updatePriceEntry: (
+    storeId: Store,
+    section: "paint" | "materials",
+    key: string,
+    patch: Partial<PriceEntry>,
+  ) => void;
+}) {
+  const materialNames = Object.keys(
+    DEFAULT_STORE_PRICING["home-depot"].materials,
+  );
+  const [target, setTarget] = useState<string>(materialNames[0]);
+  const [description, setDescription] = useState<string>(
+    materialNames[0],
+  );
+  const [phase, setPhase] = useState<
+    "idle" | "finding" | "fetching" | "done"
+  >("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<MaterialResult[]>([]);
+
+  // When the user changes the target dropdown, prefill the description.
+  const onTargetChange = (next: string) => {
+    setTarget(next);
+    setDescription(next);
+  };
+
+  const findAcross = async () => {
+    setError(null);
+    setPhase("finding");
+    setResults(
+      FIND_STORES.map((s) => ({
+        store: s,
+        productName: null,
+        url: null,
+        price: null,
+        previousPrice: pricing[s].materials[target]?.price ?? null,
+        flagReason: null,
+        status: "finding",
+      })),
+    );
+
+    let findResults: Array<{
+      store: string;
+      url: string | null;
+      productName: string | null;
+    }> = [];
+    try {
+      const res = await fetch("/api/find-products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description,
+          stores: FIND_STORES,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !Array.isArray(json.results)) {
+        setError(
+          typeof json.error === "string"
+            ? json.error
+            : `Find failed (${res.status})`,
+        );
+        setPhase("done");
+        setResults((prev) =>
+          prev.map((r) => ({
+            ...r,
+            status: "error",
+            errorMessage: "Could not find product",
+          })),
+        );
+        return;
+      }
+      findResults = json.results;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+      setPhase("done");
+      setResults((prev) =>
+        prev.map((r) => ({
+          ...r,
+          status: "error",
+          errorMessage: "Could not find product",
+        })),
+      );
+      return;
+    }
+
+    // Move to fetching phase per row in parallel.
+    setPhase("fetching");
+    setResults((prev) =>
+      prev.map((r) => {
+        const found = findResults.find((f) => f.store === r.store);
+        if (!found || !found.url) {
+          return {
+            ...r,
+            status: "error",
+            errorMessage: "Not found at this store",
+          };
+        }
+        return {
+          ...r,
+          url: found.url,
+          productName: found.productName,
+          status: "fetching",
+        };
+      }),
+    );
+
+    await Promise.all(
+      FIND_STORES.map(async (storeId) => {
+        const found = findResults.find((f) => f.store === storeId);
+        if (!found || !found.url) return;
+        try {
+          const res = await fetch("/api/fetch-price", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: found.url }),
+          });
+          const json = await res.json();
+          if (!res.ok || typeof json.price !== "number") {
+            setResults((prev) =>
+              prev.map((r) =>
+                r.store === storeId
+                  ? {
+                      ...r,
+                      status: "error",
+                      errorMessage:
+                        json.error || "Could not fetch price",
+                    }
+                  : r,
+              ),
+            );
+            return;
+          }
+          const price: number = json.price;
+          const previous = pricing[storeId].materials[target]?.price ?? null;
+          const def = defaultPriceFor(storeId, "materials", target);
+          const flag = flagPrice(price, def, previous, "materials");
+          setResults((prev) =>
+            prev.map((r) =>
+              r.store === storeId
+                ? {
+                    ...r,
+                    price,
+                    previousPrice: previous,
+                    flagReason: flag,
+                    status: "ok",
+                  }
+                : r,
+            ),
+          );
+          // Write through to pricing state immediately so the rest of
+          // the app sees the new price. Manual override + revert remain
+          // possible from the row controls below.
+          updatePriceEntry(storeId, "materials", target, {
+            price,
+            url: found.url,
+            lastUpdated: Date.now(),
+          });
+        } catch (e) {
+          setResults((prev) =>
+            prev.map((r) =>
+              r.store === storeId
+                ? {
+                    ...r,
+                    status: "error",
+                    errorMessage:
+                      e instanceof Error
+                        ? e.message
+                        : "Could not fetch price",
+                  }
+                : r,
+            ),
+          );
+        }
+      }),
+    );
+    setPhase("done");
+  };
+
+  const revert = (storeId: Store) => {
+    const result = results.find((r) => r.store === storeId);
+    if (!result || result.previousPrice === null) return;
+    updatePriceEntry(storeId, "materials", target, {
+      price: result.previousPrice,
+      // Keep the URL — only the price is reverted.
+      lastUpdated: Date.now(),
+    });
+    setResults((prev) =>
+      prev.map((r) =>
+        r.store === storeId
+          ? {
+              ...r,
+              price: result.previousPrice,
+              flagReason: null,
+            }
+          : r,
+      ),
+    );
+  };
+
+  const keep = (storeId: Store) => {
+    setResults((prev) =>
+      prev.map((r) =>
+        r.store === storeId ? { ...r, flagReason: null } : r,
+      ),
+    );
+  };
+
+  const buttonLabel =
+    phase === "finding"
+      ? "Finding products…"
+      : phase === "fetching"
+        ? "Fetching prices…"
+        : "Find Prices Across Stores";
+
+  return (
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-400">
+        Source Materials
+      </h2>
+      <p className="mb-4 text-xs text-zinc-500">
+        Paste a short description, pick which line item it maps to, and
+        let the AI find products + prices on Home Depot and Lowe&apos;s
+        in one click. Manual override remains in the Pricing tab.
+      </p>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+              Material
+            </span>
+            <select
+              value={target}
+              onChange={(e) => onTargetChange(e.target.value)}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-amber-500 focus:outline-none"
+            >
+              {materialNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase tracking-wide text-zinc-500">
+              Description (search query)
+            </span>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder='e.g. "ScotchBlue 1.88in painters tape"'
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-amber-500"
+            />
+          </label>
+        </div>
+        <button
+          type="button"
+          onClick={findAcross}
+          disabled={phase === "finding" || phase === "fetching"}
+          className="self-end rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {buttonLabel}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mt-4 rounded-md border border-red-900/60 bg-red-950/40 p-3 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
+      {results.length > 0 && (
+        <div className="mt-5 overflow-hidden rounded-lg border border-zinc-800">
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-950/60 text-[10px] uppercase tracking-wide text-zinc-500">
+              <tr>
+                <th className="px-3 py-2 text-left">Store</th>
+                <th className="px-3 py-2 text-left">Product</th>
+                <th className="px-3 py-2 text-right">Price</th>
+                <th className="px-3 py-2 text-left">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-800">
+              {results.map((r) => {
+                const storeLabel =
+                  STORES.find((s) => s.id === r.store)?.label ?? r.store;
+                return (
+                  <tr key={r.store} className="text-zinc-200">
+                    <td className="px-3 py-2 font-medium">{storeLabel}</td>
+                    <td className="px-3 py-2">
+                      {r.url ? (
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="truncate text-amber-300 underline-offset-2 hover:underline"
+                        >
+                          {r.productName || "View product"}
+                        </a>
+                      ) : (
+                        <span className="text-zinc-500">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {r.price !== null ? fmtMoney(r.price) : "—"}
+                      {r.previousPrice !== null &&
+                        r.price !== null &&
+                        r.previousPrice !== r.price && (
+                          <span className="ml-1 text-[10px] text-zinc-500">
+                            (was {fmtMoney(r.previousPrice)})
+                          </span>
+                        )}
+                    </td>
+                    <td className="px-3 py-2 text-xs">
+                      {r.status === "finding" && (
+                        <span className="text-zinc-400">Finding…</span>
+                      )}
+                      {r.status === "fetching" && (
+                        <span className="text-zinc-400">Fetching…</span>
+                      )}
+                      {r.status === "ok" && !r.flagReason && (
+                        <span className="text-emerald-300">Updated ✓</span>
+                      )}
+                      {r.status === "ok" && r.flagReason && (
+                        <span className="flex items-center gap-2">
+                          <span className="text-amber-300">
+                            ⚠ {r.flagReason}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => revert(r.store)}
+                            className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800"
+                          >
+                            Revert
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => keep(r.store)}
+                            className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800"
+                          >
+                            Keep
+                          </button>
+                        </span>
+                      )}
+                      {r.status === "error" && (
+                        <span className="text-red-400">
+                          {r.errorMessage || "Could not update"}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
